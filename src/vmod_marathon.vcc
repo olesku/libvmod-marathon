@@ -1,0 +1,14 @@
+$Module marathon 3 Marathon VMOD
+
+$Event event_func
+
+$Object server(
+  STRING endpoint="")
+
+$Method VOID .setup_application(STRING id="", INT port_index=0, 
+                               PROBE probe=0, STRING host_header="", 
+                               DURATION connect_timeout=0, DURATION first_byte_timeout=0,
+                               DURATION between_bytes_timeout=0, INT max_connections=0,
+                               INT proxy_header=0)
+
+$Method BACKEND .application(STRING id="")
