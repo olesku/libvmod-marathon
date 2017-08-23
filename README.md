@@ -43,8 +43,8 @@ sub vcl_init {
 
   new my_marathon = marathon.server("http://marathon.mydomain.tld");
 
-  # Set up applications we are going to use.
-  # A call to setup_application is required for all applications you want to as backends.
+  # Setup applications we are going to use.
+  # A call to setup_application is required for all applications you are going to use as backends.
 
    my_marathon.setup_application("/hello-world");
    my_marathon.setup_application("/myapp");
