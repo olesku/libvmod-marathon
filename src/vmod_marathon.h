@@ -79,11 +79,12 @@ struct vmod_marathon_server {
   VRT_CTX;
   char                              *vcl_name;
   struct vcl                        *vcl;
-  unsigned int                      run_threads;
+  unsigned int                      active;
   pthread_t                         sse_th;
   pthread_t                         update_th;
   pthread_cond_t                    update_cond;
   struct lock                       queue_mtx;
+  VTAILQ_ENTRY(vmod_marathon_server) next;
   VTAILQ_HEAD(,marathon_application) app_list;
   VTAILQ_HEAD(,marathon_application) update_queue;
 };
@@ -93,10 +94,12 @@ struct curl_recvbuf {
   char data[CURL_BUF_SIZE_MAX];
 };
 
-struct marathon_thread_ctx {
+struct sse_cb_ctx {
   unsigned int magic;
-  #define VMOD_MARATHON_THREAD_CTX_MAGIC 0x8476ab5f
-  struct curl_recvbuf curl_buf;
+  #define SSE_CB_CTX_MAGIC 0x8476ab5f
+  struct curl_recvbuf *buf;
   struct vmod_marathon_server *srv;
-  VRT_CTX;
 };
+
+VTAILQ_HEAD(vmod_marathon_head, vmod_marathon_server) objects;
+extern struct vmod_marathon_head objects;

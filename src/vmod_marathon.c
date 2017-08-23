@@ -26,39 +26,13 @@
 
 #include "vmod_marathon.h"
 
-// XXX: We should store all vmod_marathon_server objects in a global var so we can free resources later.
-
-int
-event_func(VRT_CTX, struct vmod_priv *vcl_priv, enum vcl_event_e e)
-{
-  switch(e) {
-    case VCL_EVENT_LOAD:
-      app_lck = Lck_CreateClass("marathon.application");
-      queue_lck = Lck_CreateClass("marathon.updatequeue");
-    break;
-
-    case VCL_EVENT_DISCARD:
-
-    break;
-
-    default:
-    return 0;
-  }
-
-  return 0;
-}
+struct vmod_marathon_head objects = VTAILQ_HEAD_INITIALIZER(objects);
 
 static void 
 zero_curl_buffer(struct curl_recvbuf *buf) 
 {
   buf->len = 0;
   buf->data[0] = '\0';
-}
-
-static void 
-init_curl_buffer(struct curl_recvbuf *buf) 
-{
-  zero_curl_buffer(buf);
 }
 
 static size_t 
@@ -68,7 +42,7 @@ curl_fetch_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
   struct curl_recvbuf* buf = userdata;
 
   if (buf->len + len > CURL_BUF_SIZE_MAX) {
-    // Buffer exhausted, just return.
+    MARATHON_LOG_WARNING(NULL, "Buffer exhaustion while fetching data from Marathon. Buffer size was %d.", buf->len+len);
     return len;
   }
 
@@ -104,31 +78,35 @@ curl_fetch(struct curl_recvbuf *buf, const char* url)
 static struct suckaddr *
 get_suckaddr(VCL_STRING host, VCL_STRING port, int family)
 {
-	struct addrinfo hints, *res = NULL;
-	struct suckaddr *sa = NULL;
+  struct addrinfo hints, *res = NULL;
+  struct suckaddr *sa = NULL;
 
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_socktype = SOCK_STREAM;
-	hints.ai_family = family;
-	if (getaddrinfo(host, port, &hints, &res) != 0)
-		return NULL;
-	if (res->ai_next != NULL)
-		return NULL;
-	sa = VSA_Malloc(res->ai_addr, res->ai_addrlen);
-	AN(sa);
-	assert(VSA_Sane(sa));
-	assert(VSA_Get_Proto(sa) == family);
-	freeaddrinfo(res);
-	return sa;
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_family = family;
+
+  if (getaddrinfo(host, port, &hints, &res) != 0)
+    return NULL;
+
+  if (res->ai_next != NULL)
+    return NULL;
+
+  sa = VSA_Malloc(res->ai_addr, res->ai_addrlen);
+  AN(sa);
+  assert(VSA_Sane(sa));
+  assert(VSA_Get_Proto(sa) == family);
+
+  freeaddrinfo(res);
+  return sa;
 }
 
 static void
 get_addrname(char *addr, struct suckaddr *sa)
 {
-	char a[VTCP_ADDRBUFSIZE], p[VTCP_PORTBUFSIZE];
+  char a[VTCP_ADDRBUFSIZE], p[VTCP_PORTBUFSIZE];
 
-	VTCP_name(sa, a, sizeof(a), p, sizeof(p));
-	snprintf(addr, IPBUFSIZ, "%s:%s", a, p);
+  VTCP_name(sa, a, sizeof(a), p, sizeof(p));
+  snprintf(addr, IPBUFSIZ, "%s:%s", a, p);
 }
 
 static void 
@@ -188,9 +166,11 @@ add_backend(VRT_CTX, struct marathon_application *app,
   be.probe = NULL;
   be.ipv4_suckaddr = sa4;
   be.ipv6_suckaddr = sa6;
+  /* XXX: Do we actually need these fields ?
   be.ipv4_addr = strdup(ipv4_addr);
   be.ipv6_addr = strdup(ipv6_addr);
   be.port = strdup(port);
+  */
   be.vcl_name = app->vcl_name;
   be.probe = app->probe;
   be.hosthdr = app->hosthdr;
@@ -202,7 +182,7 @@ add_backend(VRT_CTX, struct marathon_application *app,
   ALLOC_OBJ(mbe, VMOD_MARATHON_BACKEND_MAGIC);
   AN(mbe);
 
-  // XXX: Remove me and clean up the struct.
+  // XXX: Only here for debugging purposes, remove me and clean up the struct.
   mbe->host_str = strdup(host);
   mbe->port_str = strdup(port);
 
@@ -220,15 +200,13 @@ static int
 marathon_update_application (VRT_CTX, struct vmod_marathon_server *srv, 
                              struct marathon_application *app)
 {
+  struct curl_recvbuf buf;
+  char endpoint[1024];
   CURLcode res;
 
-  char endpoint[1024];
-  struct curl_recvbuf buf;
+  zero_curl_buffer(&buf);
 
   MARATHON_LOG_INFO(ctx, "marathon_update_application: %s", app->id);
-
-  init_curl_buffer(&buf);
-
   snprintf(endpoint, 1024, "%s%s%s", srv->marathon_endpoint, MARATHON_APP_PATH, app->id);
 
   res = curl_fetch(&buf, endpoint);
@@ -265,12 +243,13 @@ marathon_update_application (VRT_CTX, struct vmod_marathon_server *srv,
       }
 
       /* XXX: We must actually use the configured portindex. ports->u.array.len */
+      /* XXX: We should also check task health if it has a configured health check. */
       char port[6];
       snprintf(port, 6, "%lld", YAJL_GET_INTEGER(ports->u.array.values[0]));
       add_backend(ctx, app, YAJL_GET_STRING(host), port);
     }
     
-    app->last_update = VTIM_real(); // XXX: Set this to current unixtime.
+    app->last_update = VTIM_real();
 
     Lck_Unlock(&app->mtx);
   }
@@ -280,7 +259,7 @@ marathon_update_application (VRT_CTX, struct vmod_marathon_server *srv,
   return 1;
 }
 
-void 
+static void
 marathon_schedule_update(struct vmod_marathon_server *srv, struct marathon_application *app) {
   struct marathon_application *qelm = NULL;
 
@@ -293,7 +272,6 @@ marathon_schedule_update(struct vmod_marathon_server *srv, struct marathon_appli
   VTAILQ_FOREACH(qelm, &srv->update_queue, next) {
     if (qelm == app) {
       Lck_Unlock(&srv->queue_mtx);
-      AZ(pthread_cond_broadcast(&srv->update_cond));
       return;
     }
   }
@@ -301,7 +279,19 @@ marathon_schedule_update(struct vmod_marathon_server *srv, struct marathon_appli
   // Add it to the update queue.
   VTAILQ_INSERT_TAIL(&srv->update_queue, app, next);
   Lck_Unlock(&srv->queue_mtx);
+}
 
+static void
+marathon_schedule_update_all(struct vmod_marathon_server *srv) {
+  struct marathon_application *app = NULL;
+  VTAILQ_FOREACH(app, &srv->app_list, next) {
+    CHECK_OBJ_NOTNULL(app, VMOD_MARATHON_APPLICATION_MAGIC);
+    marathon_schedule_update(srv, app);
+  }
+}
+
+static void
+marathon_perform_update(struct vmod_marathon_server *srv) {
   // Trigger update condition.
   AZ(pthread_cond_broadcast(&srv->update_cond));
 }
@@ -309,7 +299,7 @@ marathon_schedule_update(struct vmod_marathon_server *srv, struct marathon_appli
 void *
 marathon_update_thread_func(void* ptr) {
   struct vmod_marathon_server *srv = NULL;
-  struct marathon_application *qelm = NULL, *qelm2 = NULL;
+  struct marathon_application *qelm = NULL;
   struct vrt_ctx ctx;
   
   CAST_OBJ_NOTNULL(srv, ptr, VMOD_MARATHON_SERVER_MAGIC);
@@ -317,34 +307,42 @@ marathon_update_thread_func(void* ptr) {
   INIT_OBJ(&ctx, VRT_CTX_MAGIC);
   ctx.vcl = srv->vcl;
 
-  while (1) {
+  do {
     Lck_Lock(&srv->queue_mtx);
-    int ret = Lck_CondWait(&srv->update_cond, &srv->queue_mtx, VTIM_real() + 10);
-    MARATHON_LOG_INFO(&ctx, "update_cond ret: %d", ret);
-    if (!srv->run_threads) return NULL;
-
-    VTAILQ_FOREACH_SAFE(qelm, &srv->update_queue, next, qelm2) {
-      MARATHON_LOG_INFO(&ctx, "Updating app: %s", qelm->id);
-      if(marathon_update_application(&ctx, srv, qelm))
-        VTAILQ_REMOVE(&srv->update_queue, qelm, next);
-    }
-
+    Lck_CondWait(&srv->update_cond, &srv->queue_mtx, VTIM_real() + 30); // XXX: Consider if we actually need a timeout here.
     Lck_Unlock(&srv->queue_mtx);
-  }
+
+    if (!srv->active) return NULL;
+
+    while(!VTAILQ_EMPTY(&srv->update_queue)) {
+      qelm = VTAILQ_FIRST(&srv->update_queue);
+      CHECK_OBJ_NOTNULL(qelm, VMOD_MARATHON_APPLICATION_MAGIC);
+
+      if (marathon_update_application(&ctx, srv, qelm)) {
+        Lck_Lock(&srv->queue_mtx);
+        VTAILQ_REMOVE(&srv->update_queue, qelm, next);
+        Lck_Unlock(&srv->queue_mtx);
+      }
+    }
+  } while(1);
 }
 
 static size_t 
 curl_sse_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
  {
-  size_t recv_len = (size * nmemb);
-  struct marathon_thread_ctx *tctx;
+  struct sse_cb_ctx *cb_ctx = NULL;
+  struct vmod_marathon_server *srv = NULL;
   struct curl_recvbuf *buf = NULL;
+  size_t recv_len = (size * nmemb);
 
-  CAST_OBJ_NOTNULL(tctx, userdata, VMOD_MARATHON_THREAD_CTX_MAGIC);
-  CHECK_OBJ_NOTNULL(tctx->srv, VMOD_MARATHON_SERVER_MAGIC);
-  CHECK_OBJ_NOTNULL(tctx->ctx, VRT_CTX_MAGIC);
+  CAST_OBJ_NOTNULL(cb_ctx, userdata, SSE_CB_CTX_MAGIC);
+  CHECK_OBJ_NOTNULL(cb_ctx->srv, VMOD_MARATHON_SERVER_MAGIC);
 
-  buf = &tctx->curl_buf;
+  srv = cb_ctx->srv;
+  buf = cb_ctx->buf;
+
+  if (!srv->active)
+    return CURL_READFUNC_ABORT;
 
   if (buf->len+recv_len < CURL_BUF_SIZE_MAX) {
     memcpy(buf->data+buf->len, ptr, recv_len);
@@ -411,10 +409,11 @@ curl_sse_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
         yajl_val app_id = yajl_tree_get(node, appid_path, yajl_t_string);
 
         if (YAJL_IS_STRING(app_id)) {
-          MARATHON_LOG_INFO(tctx->ctx, "Status update on %s.", YAJL_GET_STRING(app_id));
-          struct marathon_application *app = marathon_get_app(tctx->srv, YAJL_GET_STRING(app_id));
-          if (app != NULL)
-            marathon_schedule_update(tctx->srv, app);
+          struct marathon_application *app = marathon_get_app(srv, YAJL_GET_STRING(app_id));
+          if (app != NULL) {
+            marathon_schedule_update(srv, app);
+            marathon_perform_update(srv);
+          }
         }
       }
     }
@@ -442,107 +441,56 @@ curl_sse_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
 static void* 
 sse_event_thread_func(void *ptr) 
 {
-  struct marathon_thread_ctx *tctx = NULL;
-  CURL *curl;
-  CURLcode res;
+  struct vmod_marathon_server *srv = NULL;
+  struct curl_recvbuf buf;
+  struct sse_cb_ctx cb_ctx;
   struct curl_slist *headers = NULL;
   char endpoint[1024];
+  CURL *curl;
+  CURLcode res;
 
-  CAST_OBJ_NOTNULL(tctx, ptr, VMOD_MARATHON_THREAD_CTX_MAGIC);
-  CHECK_OBJ_NOTNULL(tctx->srv, VMOD_MARATHON_SERVER_MAGIC);
-  CHECK_OBJ_NOTNULL(tctx->ctx, VRT_CTX_MAGIC);
+  CAST_OBJ_NOTNULL(srv, ptr, VMOD_MARATHON_SERVER_MAGIC);
+  INIT_OBJ(&cb_ctx, SSE_CB_CTX_MAGIC);
 
-  snprintf(endpoint, 1024, "%s%s", tctx->srv->marathon_endpoint, MARATHON_SSE_PATH);
-  MARATHON_LOG_INFO(tctx->ctx, "SSE Endpoint: %s", endpoint);
+  cb_ctx.srv = srv;
+  cb_ctx.buf = &buf;
 
-  init_curl_buffer(&tctx->curl_buf);
+  snprintf(endpoint, 1024, "%s%s", srv->marathon_endpoint, MARATHON_SSE_PATH);
+  MARATHON_LOG_INFO(NULL, "SSE Endpoint: %s", endpoint);
+
+  zero_curl_buffer(&buf);
   curl = curl_easy_init();
 
   headers = curl_slist_append(headers, "Accept: text/event-stream");
   res = curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
-  curl_easy_setopt(curl, CURLOPT_WRITEDATA, tctx);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &cb_ctx);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_sse_cb);
   curl_easy_setopt(curl, CURLOPT_URL, endpoint);
 
-  while(tctx->srv->run_threads) {
+  // TODO: We should have some sort of timeout here.. Checking for SSE pings is probably the best approach.
+
+  while(srv->active) {
+    marathon_schedule_update_all(srv);
+    marathon_perform_update(srv);
+
+    MARATHON_LOG_INFO(NULL, "Starting SSE connection.");
     res = curl_easy_perform(curl);
 
     if (res != CURLE_OK) {
-      MARATHON_LOG_ERROR(tctx->ctx, "curl failed: %s\n", curl_easy_strerror(res));
+      MARATHON_LOG_ERROR(NULL, "curl failed: %s\n", curl_easy_strerror(res));
     }
 
+    /* We might have lost updates if we reach this point.
+     * Schedule update of all applications to be sure we are in a consistent state.
+    */
     usleep(3000000);
   }
 
-  FREE_OBJ(tctx);
   curl_easy_cleanup(curl);
   curl_slist_free_all(headers);
 
   return NULL;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////
-
-/* Constructor for marathon.server object. */
-VCL_VOID 
-vmod_server__init(VRT_CTX, struct vmod_marathon_server **srvp, 
-                  const char *vcl_name, VCL_STRING endpoint) 
-{
-  struct vmod_marathon_server *srv = NULL;
-  struct marathon_thread_ctx *tctx = NULL;
-
-  CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
-
-  AN(srvp);
-  AZ(*srvp);  
-  AN(vcl_name);
-  AN(endpoint);
-
-  ALLOC_OBJ(srv, VMOD_MARATHON_SERVER_MAGIC);
-  CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
-
-  srv->vcl      = ctx->vcl;
-  srv->vcl_name = strdup(vcl_name);
-  srv->marathon_endpoint = strdup(endpoint);
-  
-  VTAILQ_INIT(&srv->app_list);
-  VTAILQ_INIT(&srv->update_queue);
-
-  *srvp = srv;
-
-  // SSE event watcher thread.
-  ALLOC_OBJ(tctx, VMOD_MARATHON_THREAD_CTX_MAGIC);
-  CHECK_OBJ_NOTNULL(tctx, VMOD_MARATHON_THREAD_CTX_MAGIC);
-
-  tctx->srv = srv;
-  tctx->ctx = ctx;
-  srv->run_threads = 1;
-  
-  Lck_New(&srv->queue_mtx, queue_lck);
-  AZ(pthread_create(&srv->update_th, NULL, &marathon_update_thread_func, srv));
-  AZ(pthread_create(&srv->sse_th, NULL, &sse_event_thread_func, tctx));
-}
-
-/* Destructor for marathon.server object. */
-VCL_VOID 
-vmod_server__fini(struct vmod_marathon_server **srvp) 
-{
-  struct vmod_marathon_server *srv;
-
-  if (srvp == NULL || *srvp == NULL) return;
-
-  srv = *srvp;
-
-  CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
-  
-  srv->run_threads = 0;
-  pthread_cond_broadcast(&srv->update_cond);
-  pthread_join(srv->sse_th, NULL);
-  pthread_join(srv->update_th, NULL);
-
-  FREE_OBJ(srv);
-  // XXX: Free app_list, backends, strdup allocated memory, etc.
 }
 
 VCL_VOID 
@@ -575,10 +523,8 @@ vmod_server_setup_application(VRT_CTX, struct vmod_marathon_server *srv,
   app->curbe = NULL;
 
   Lck_New(&app->mtx, app_lck);
-
   VTAILQ_INSERT_TAIL(&srv->app_list, app, next);
-
-  marathon_schedule_update(srv, app);
+  // XXX: marathon_schedule_update(srv, app);
 }
 
 VCL_BACKEND 
@@ -596,7 +542,7 @@ vmod_server_application(VRT_CTX, struct vmod_marathon_server *srv,
       return NULL;
     }
 
-    // Round-robin.
+    // Round robin the application backend list.
     if (app->curbe == NULL) {
       app->curbe = VTAILQ_FIRST(&app->belist);
     } else {
@@ -614,4 +560,152 @@ vmod_server_application(VRT_CTX, struct vmod_marathon_server *srv,
   } 
 
   return NULL;
+}
+
+static void
+marathon_start(struct vmod_marathon_server *srv) {
+  MARATHON_LOG_INFO(NULL, "Starting threads");
+  AZ(pthread_create(&srv->sse_th, NULL, &sse_event_thread_func, srv));
+  AZ(pthread_create(&srv->update_th, NULL, &marathon_update_thread_func, srv));
+}
+
+static void
+marathon_stop(struct vmod_marathon_server *srv) {
+  struct marathon_application *app = NULL, *appn = NULL;
+  struct marathon_backend *mbe = NULL, *mben = NULL;
+  struct vrt_ctx ctx;
+
+  MARATHON_LOG_INFO(NULL, "Performing cleanup of %s.", srv->vcl_name);
+  pthread_cond_broadcast(&srv->update_cond);
+  AZ(pthread_join(srv->sse_th, NULL));
+  AZ(pthread_join(srv->update_th, NULL));
+  MARATHON_LOG_INFO(NULL, "Threads joined.");
+
+  CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
+
+  INIT_OBJ(&ctx, VRT_CTX_MAGIC);
+  ctx.vcl = srv->vcl;
+  ctx.vsl = NULL;
+
+  AZ(srv->active);
+
+  // Loop through all apps.
+  VTAILQ_FOREACH_SAFE(app, &srv->app_list, next, appn) {
+    MARATHON_LOG_INFO(NULL, "Cleaning upp :%s", app->id);
+    // Loop through and free all backends.
+    VTAILQ_FOREACH_SAFE(mbe, &app->belist, next, mben) {
+      MARATHON_LOG_INFO(NULL, "  * Removing backend %s:%s", mbe->host_str, mbe->port_str);
+      free(mbe->host_str);
+      free(mbe->port_str);
+      VRT_delete_backend(&ctx, &mbe->dir);
+      // XXX: Check if VRT_delete_backend also does a free of ipv(4|6)_addr and port.
+      VTAILQ_REMOVE(&app->belist, mbe, next);
+      FREE_OBJ(mbe);
+    }
+  }
+}
+
+int
+event_func(VRT_CTX, struct vmod_priv *vcl_priv, enum vcl_event_e e)
+{
+  unsigned int active = 0;
+  struct vmod_marathon_server *obj = NULL;
+
+  switch(e) {
+    case VCL_EVENT_LOAD:
+      MARATHON_LOG_INFO(ctx, "VCL_EVENT_LOAD");
+      app_lck = Lck_CreateClass("marathon.application");
+      queue_lck = Lck_CreateClass("marathon.updatequeue");
+      return(0);
+    break;
+
+    case VCL_EVENT_DISCARD:
+      MARATHON_LOG_INFO(ctx, "VCL_EVENT_DISCARD");
+      return(0);
+    break;
+
+    case VCL_EVENT_WARM:
+      MARATHON_LOG_INFO(ctx, "VCL_EVENT_WARM");
+      active = 1;
+    break;
+
+    case VCL_EVENT_COLD:
+      MARATHON_LOG_INFO(ctx, "VCL_EVENT_COLD");
+      active = 0;
+    break;
+
+    //default:
+  }
+
+  VTAILQ_FOREACH(obj, &objects, next) {
+    if (obj->vcl == ctx->vcl) {
+      //assert(obj->active != active);
+      obj->active = active;
+
+      if (active) {
+        marathon_start(obj);
+      } else {
+        marathon_stop(obj);
+      }
+    }
+  }
+
+  return 0;
+}
+
+/* Constructor for marathon.server object. */
+VCL_VOID
+vmod_server__init(VRT_CTX, struct vmod_marathon_server **srvp,
+                  const char *vcl_name, VCL_STRING endpoint)
+{
+  struct vmod_marathon_server *srv = NULL;
+
+  CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
+
+  AN(srvp);
+  AZ(*srvp);
+  AN(vcl_name);
+  AN(endpoint);
+
+  ALLOC_OBJ(srv, VMOD_MARATHON_SERVER_MAGIC);
+  CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
+
+  srv->vcl                = ctx->vcl;
+  srv->vcl_name           = strdup(vcl_name);
+  srv->marathon_endpoint  = strdup(endpoint);
+  srv->active             = 0;
+
+  VTAILQ_INIT(&srv->app_list);
+  VTAILQ_INIT(&srv->update_queue);
+
+  *srvp = srv;
+
+  Lck_New(&srv->queue_mtx, queue_lck);
+  VTAILQ_INSERT_TAIL(&objects, srv, next);
+}
+
+/* Destructor for marathon.server object. */
+VCL_VOID
+vmod_server__fini(struct vmod_marathon_server **srvp)
+{
+  struct vmod_marathon_server *srv;
+  struct marathon_application *app = NULL, *appn = NULL;
+
+  if (srvp == NULL || *srvp == NULL) return;
+
+  srv = *srvp;
+
+  CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
+  AZ(srv->active);
+
+  VTAILQ_FOREACH_SAFE(app, &srv->app_list, next, appn) {
+    VTAILQ_REMOVE(&srv->app_list, app, next);
+    free(app->id);
+    free(app->hosthdr);
+    FREE_OBJ(app);
+    AZ(app);
+  }
+
+  FREE_OBJ(srv);
+  AZ(srv);
 }
