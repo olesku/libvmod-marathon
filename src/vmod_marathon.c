@@ -633,8 +633,6 @@ event_func(VRT_CTX, struct vmod_priv *vcl_priv, enum vcl_event_e e)
       MARATHON_LOG_INFO(ctx, "VCL_EVENT_COLD");
       active = 0;
     break;
-
-    //default:
   }
 
   VTAILQ_FOREACH(obj, &objects, next) {
@@ -702,9 +700,12 @@ vmod_server__fini(struct vmod_marathon_server **srvp)
     VTAILQ_REMOVE(&srv->app_list, app, next);
     free(app->id);
     free(app->hosthdr);
+    Lck_Delete(&app->mtx);
     FREE_OBJ(app);
     AZ(app);
   }
+
+  Lck_Delete(&srv->queue_mtx);
 
   FREE_OBJ(srv);
   AZ(srv);
