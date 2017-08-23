@@ -217,6 +217,8 @@ add_backend(VRT_CTX, struct marathon_application *app,
 
   // XXX: Consider moving app lock to here.
   Lck_AssertHeld(&app->mtx);
+
+  mbe->time_added = VTIM_real();
   VTAILQ_INSERT_TAIL(&app->belist, mbe, next);
 }
 
@@ -505,9 +507,6 @@ sse_event_thread_func(void *ptr)
       MARATHON_LOG_ERROR(NULL, "curl failed: %s\n", curl_easy_strerror(res));
     }
 
-    /* We might have lost updates if we reach this point.
-     * Schedule update of all applications to be sure we are in a consistent state.
-    */
     usleep(3000000);
   }
 
