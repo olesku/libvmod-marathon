@@ -4,7 +4,7 @@
 ---
 This module dynamically fetches backends from Marathon applications and makes them available in your Varnish VCL.
 
-It listens on Marathon's SSE eventbus and update configured applications as their status changes without requiring reloading Varnish.
+It listens on Marathon's SSE eventbus and update configured applications as their status changes without requiring to reload Varnish.
 
 ### Methods
 ---
