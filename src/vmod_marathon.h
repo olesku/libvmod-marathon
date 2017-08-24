@@ -87,7 +87,7 @@ struct marathon_application {
   #define VMOD_MARATHON_APPLICATION_MAGIC 0x8476ab3f
   struct lock mtx;
   char *id;
-  int port_index;
+  unsigned int port_index;
   double last_update;
   const struct vrt_backend_probe	*probe;
   struct marathon_backend *curbe;

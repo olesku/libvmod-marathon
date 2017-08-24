@@ -22,8 +22,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
 
-#include "config.h"
+
 #define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +38,7 @@ THE SOFTWARE.
 #include <curl/curl.h>
 #include <yajl/yajl_tree.h>
 
+#include "config.h"
 #include "vcl.h"
 #include "vtcp.h"
 #include "vrt.h"
@@ -190,7 +192,7 @@ add_backend(VRT_CTX, struct marathon_application *app,
   be.probe = NULL;
   be.ipv4_suckaddr = sa4;
   be.ipv6_suckaddr = sa6;
-  /* XXX: Do we actually need these fields ?
+  /* TODO: Do we actually need these fields ?
   be.ipv4_addr = strdup(ipv4_addr);
   be.ipv6_addr = strdup(ipv6_addr);
   be.port = strdup(port);
@@ -206,7 +208,7 @@ add_backend(VRT_CTX, struct marathon_application *app,
   ALLOC_OBJ(mbe, VMOD_MARATHON_BACKEND_MAGIC);
   AN(mbe);
 
-  // XXX: Only here for debugging purposes, remove me and clean up the struct.
+  // TODO: Only here for debugging purposes, remove me and clean up the struct.
   mbe->host_str = strdup(host);
   mbe->port_str = strdup(port);
 
@@ -215,7 +217,7 @@ add_backend(VRT_CTX, struct marathon_application *app,
 
   mbe->dir = dir;
 
-  // XXX: Consider moving app lock to here.
+  // TODO: Consider moving app lock to here.
   Lck_AssertHeld(&app->mtx);
 
   mbe->time_added = VTIM_real();
@@ -268,10 +270,14 @@ marathon_update_application (VRT_CTX, struct vmod_marathon_server *srv,
         continue;
       }
 
-      /* XXX: We must actually use the configured portindex. ports->u.array.len */
-      /* XXX: We should also check task health if it has a configured health check. */
+      unsigned int port_index = 0;
+      if (ports->u.array.len >= app->port_index)
+        port_index = app->port_index;
+
       char port[6];
-      snprintf(port, 6, "%lld", YAJL_GET_INTEGER(ports->u.array.values[0]));
+      snprintf(port, 6, "%lld", YAJL_GET_INTEGER(ports->u.array.values[port_index]));
+
+      /* TODO: We should also check task health if it has a configured health check. */
       add_backend(ctx, app, YAJL_GET_STRING(host), port);
     }
     
@@ -335,7 +341,7 @@ marathon_update_thread_func(void* ptr) {
 
   do {
     Lck_Lock(&srv->queue_mtx);
-    Lck_CondWait(&srv->update_cond, &srv->queue_mtx, VTIM_real() + 30); // XXX: Consider if we actually need a timeout here.
+    Lck_CondWait(&srv->update_cond, &srv->queue_mtx, VTIM_real() + 30); // TODO: Consider if we actually need a timeout here.
     Lck_Unlock(&srv->queue_mtx);
 
     if (!srv->active) return NULL;
@@ -442,6 +448,7 @@ curl_sse_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
           }
         }
       }
+      yajl_tree_free(node);
     }
   }
 
@@ -507,7 +514,7 @@ sse_event_thread_func(void *ptr)
       MARATHON_LOG_ERROR(NULL, "curl failed: %s\n", curl_easy_strerror(res));
     }
 
-    usleep(3000000);
+    // usleep(3000000);
   }
 
   curl_easy_cleanup(curl);
@@ -547,7 +554,7 @@ vmod_server_setup_application(VRT_CTX, struct vmod_marathon_server *srv,
 
   Lck_New(&app->mtx, app_lck);
   VTAILQ_INSERT_TAIL(&srv->app_list, app, next);
-  // XXX: marathon_schedule_update(srv, app);
+  marathon_schedule_update(srv, app);
 }
 
 VCL_BACKEND 
@@ -598,6 +605,10 @@ marathon_stop(struct vmod_marathon_server *srv) {
   struct marathon_backend *mbe = NULL, *mben = NULL;
   struct vrt_ctx ctx;
 
+  // TODO: We need to stop the ongoing curl calls somehow.
+
+  AZ(srv->active);
+
   MARATHON_LOG_INFO(NULL, "Performing cleanup of %s.", srv->vcl_name);
   pthread_cond_broadcast(&srv->update_cond);
   AZ(pthread_join(srv->sse_th, NULL));
@@ -621,7 +632,7 @@ marathon_stop(struct vmod_marathon_server *srv) {
       free(mbe->host_str);
       free(mbe->port_str);
       VRT_delete_backend(&ctx, &mbe->dir);
-      // XXX: Check if VRT_delete_backend also does a free of ipv(4|6)_addr and port.
+      // TODO: Check if VRT_delete_backend also does a free of ipv(4|6)_addr and port.
       VTAILQ_REMOVE(&app->belist, mbe, next);
       FREE_OBJ(mbe);
     }
@@ -660,7 +671,7 @@ event_func(VRT_CTX, struct vmod_priv *vcl_priv, enum vcl_event_e e)
 
   VTAILQ_FOREACH(obj, &objects, next) {
     if (obj->vcl == ctx->vcl) {
-      //assert(obj->active != active);
+      assert(obj->active != active);
       obj->active = active;
 
       if (active) {
