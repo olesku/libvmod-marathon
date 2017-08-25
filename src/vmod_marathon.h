@@ -1,27 +1,3 @@
-/*
-The MIT License (MIT)
-
-Copyright (c) 2017 Ole Fredrik Skudsvik <ole.skudsvik@gmail.com>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-*/
-
 #define MARATHON_SSE_PATH "/v2/events?event_type=status_update_event"
 #define MARATHON_APP_PATH "/v2/apps"
 #define SSE_EVENT_SIZE_MAX 64
@@ -69,9 +45,6 @@ THE SOFTWARE.
 #define MARATHON_LOG_INFO(ctx, message, ...) \
     MARATHON_LOG(ctx, LOG_INFO, message, ##__VA_ARGS__)
 
-struct VSC_C_lck *app_lck = NULL;
-struct VSC_C_lck *queue_lck = NULL;
-
 struct marathon_backend {
   unsigned int magic;
   #define VMOD_MARATHON_BACKEND_MAGIC 0x8476ab2f
@@ -85,6 +58,7 @@ struct marathon_backend {
 struct marathon_application {
   unsigned int magic;
   #define VMOD_MARATHON_APPLICATION_MAGIC 0x8476ab3f
+  struct VSC_C_lck *lck;
   struct lock mtx;
   char *id;
   unsigned int port_index;
@@ -108,6 +82,7 @@ struct vmod_marathon_server {
   pthread_t                         update_th;
   pthread_cond_t                    update_cond;
   struct lock                       queue_mtx;
+  struct VSC_C_lck                  *queue_lck;
   VTAILQ_ENTRY(vmod_marathon_server) next;
   VTAILQ_HEAD(,marathon_application) app_list;
   VTAILQ_HEAD(,marathon_application) update_queue;

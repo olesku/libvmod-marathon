@@ -15,7 +15,7 @@ LT_INIT([dlopen disable-static])
 
 AX_PTHREAD(,[AC_MSG_ERROR([Could not configure pthreads support])])
 
-LIBS="$PTHREAD_LIBS $LIBS"
+LIBS="$PTHREAD_LIBS $LIBS -lcurl -lyajl"
 CFLAGS="$CFLAGS $PTHREAD_CFLAGS"
 CC="$PTHREAD_CC"
 

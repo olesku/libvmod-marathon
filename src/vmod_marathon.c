@@ -1,27 +1,3 @@
-/*
-The MIT License (MIT)
-
-Copyright (c) 2017 Ole Fredrik Skudsvik <ole.skudsvik@gmail.com>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-*/
-
 
 #define _GNU_SOURCE
 
@@ -54,6 +30,9 @@ THE SOFTWARE.
 
 struct vmod_marathon_head objects = VTAILQ_HEAD_INITIALIZER(objects);
 
+/*
+* Initialize / zero out curl_recvbuffer.
+*/
 static void 
 zero_curl_buffer(struct curl_recvbuf *buf) 
 {
@@ -61,6 +40,9 @@ zero_curl_buffer(struct curl_recvbuf *buf)
   buf->data[0] = '\0';
 }
 
+/*
+* Curl write callback func used in curl_fetch()
+*/
 static size_t 
 curl_fetch_cb(char *ptr, size_t size, size_t nmemb, void *userdata) 
 {
@@ -80,6 +62,9 @@ curl_fetch_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
   return len;
 }
 
+/*
+* Fetch URL using libcurl.
+*/
 static CURLcode 
 curl_fetch(struct curl_recvbuf *buf, const char* url) 
 {
@@ -101,6 +86,9 @@ curl_fetch(struct curl_recvbuf *buf, const char* url)
   return res;
 }
 
+/* 
+* Fill suckaddr struct from hoststr, portstr and family.
+*/
 static struct suckaddr *
 get_suckaddr(VCL_STRING host, VCL_STRING port, int family)
 {
@@ -126,6 +114,9 @@ get_suckaddr(VCL_STRING host, VCL_STRING port, int family)
   return sa;
 }
 
+/*
+* Get addr:port as string from suckaddr struct.
+*/
 static void
 get_addrname(char *addr, struct suckaddr *sa)
 {
@@ -135,18 +126,24 @@ get_addrname(char *addr, struct suckaddr *sa)
   snprintf(addr, IPBUFSIZ, "%s:%s", a, p);
 }
 
+/*
+* Free all backends assigned to a mararhon_application.
+*/
 static void 
-free_be_list(struct marathon_application *app)
+free_be_list(VRT_CTX, struct marathon_application *app)
 {
-  struct marathon_backend *be = NULL, *be2 = NULL;
+  struct marathon_backend *mbe = NULL, *mben = NULL;
 
   Lck_Lock(&app->mtx);
-  VTAILQ_FOREACH_SAFE(be, &app->belist, next, be2) {
-    AN(be);
-    VTAILQ_REMOVE(&app->belist, be, next);
-    FREE_OBJ(be);
-    AZ(be);
-  }
+
+  VTAILQ_FOREACH_SAFE(mbe, &app->belist, next, mben) {
+  free(mbe->host_str);
+  free(mbe->port_str);
+  VRT_delete_backend(ctx, &mbe->dir);
+  // TODO: Check if VRT_delete_backend also does a free of ipv(4|6)_addr and port.
+  VTAILQ_REMOVE(&app->belist, mbe, next);
+  FREE_OBJ(mbe);
+}
 
   VTAILQ_INIT(&app->belist);
 
@@ -154,13 +151,17 @@ free_be_list(struct marathon_application *app)
   Lck_Unlock(&app->mtx);
 }
 
+/*
+* Get marathon_application from ID.
+* Returns NULL if not found.
+*/
 static struct marathon_application* 
 marathon_get_app(struct vmod_marathon_server* srv, const char* id) 
 {
   struct marathon_application *obj = NULL;
 
   VTAILQ_FOREACH(obj, &srv->app_list, next) {
-    if (strncmp(obj->id, id, strlen(obj->id)) == 0) {
+    if (strncmp(id, obj->id, strlen(id)) == 0) {
       return obj;
     } 
   }
@@ -168,6 +169,9 @@ marathon_get_app(struct vmod_marathon_server* srv, const char* id)
   return NULL;
 }
 
+/*
+* Add backend to marathon_application.
+*/
 static void 
 add_backend(VRT_CTX, struct marathon_application *app, 
             const char *host, const char *port)
@@ -224,6 +228,9 @@ add_backend(VRT_CTX, struct marathon_application *app,
   VTAILQ_INSERT_TAIL(&app->belist, mbe, next);
 }
 
+/*
+* Fetch backends for a given marathon_application from Marathon.
+*/
 static int 
 marathon_update_application (VRT_CTX, struct vmod_marathon_server *srv, 
                              struct marathon_application *app)
@@ -254,21 +261,28 @@ marathon_update_application (VRT_CTX, struct vmod_marathon_server *srv,
   const char *task_path[] = {"app", "tasks", (const char *) 0};
   const char *host_path[] = {"host", (const char *) 0};
   const char *ports_path[] = {"ports", (const char *) 0};
+  const char *state_path[] = {"state", (const char *) 0};
+
   yajl_val tasks = yajl_tree_get(node, task_path, yajl_t_array);
 
   if (tasks && YAJL_IS_ARRAY(tasks)) {
-    free_be_list(app);
+    free_be_list(ctx, app);
     Lck_Lock(&app->mtx);
 
     for (unsigned int i = 0; i < tasks->u.array.len; i++) {
       yajl_val task = tasks->u.array.values[i];
       yajl_val host = yajl_tree_get(task, host_path, yajl_t_string);
       yajl_val ports = yajl_tree_get(task, ports_path, yajl_t_array);
+      yajl_val state = yajl_tree_get(task, state_path, yajl_t_string);
 
       if (!YAJL_IS_STRING(host) || !YAJL_IS_ARRAY(ports) || 
           !YAJL_IS_INTEGER(ports->u.array.values[0])) {
         continue;
       }
+
+      // Only add tasks that is in TASK_RUNNING state.
+      if (YAJL_IS_STRING(state) && strncmp(YAJL_GET_STRING(state), "TASK_RUNNING", 12) != 0)
+        continue;
 
       unsigned int port_index = 0;
       if (ports->u.array.len >= app->port_index)
@@ -276,8 +290,6 @@ marathon_update_application (VRT_CTX, struct vmod_marathon_server *srv,
 
       char port[6];
       snprintf(port, 6, "%lld", YAJL_GET_INTEGER(ports->u.array.values[port_index]));
-
-      /* TODO: We should also check task health if it has a configured health check. */
       add_backend(ctx, app, YAJL_GET_STRING(host), port);
     }
     
@@ -291,6 +303,9 @@ marathon_update_application (VRT_CTX, struct vmod_marathon_server *srv,
   return 1;
 }
 
+/*
+* Schedule update of a given marathon_application.
+*/
 static void
 marathon_schedule_update(struct vmod_marathon_server *srv, struct marathon_application *app) {
   struct marathon_application *qelm = NULL;
@@ -313,6 +328,9 @@ marathon_schedule_update(struct vmod_marathon_server *srv, struct marathon_appli
   Lck_Unlock(&srv->queue_mtx);
 }
 
+/*
+* Schedule update of all marathon_application's.
+*/
 static void
 marathon_schedule_update_all(struct vmod_marathon_server *srv) {
   struct marathon_application *app = NULL;
@@ -322,12 +340,19 @@ marathon_schedule_update_all(struct vmod_marathon_server *srv) {
   }
 }
 
+/*
+* Perform all schedules updates.
+*/
 static void
 marathon_perform_update(struct vmod_marathon_server *srv) {
   // Trigger update condition.
   AZ(pthread_cond_broadcast(&srv->update_cond));
 }
 
+/*
+* Thread that reads scheduled updates and do the actual update.
+* Woken up by triggering sev->update_cond.
+*/
 void *
 marathon_update_thread_func(void* ptr) {
   struct vmod_marathon_server *srv = NULL;
@@ -359,6 +384,9 @@ marathon_update_thread_func(void* ptr) {
   } while(1);
 }
 
+/*
+* Curl write callback for sse_event_thread_func.
+*/
 static size_t 
 curl_sse_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
  {
@@ -513,8 +541,6 @@ sse_event_thread_func(void *ptr)
     if (res != CURLE_OK) {
       MARATHON_LOG_ERROR(NULL, "curl failed: %s\n", curl_easy_strerror(res));
     }
-
-    // usleep(3000000);
   }
 
   curl_easy_cleanup(curl);
@@ -523,6 +549,10 @@ sse_event_thread_func(void *ptr)
   return NULL;
 }
 
+/*
+* VCL function .setup_application()
+* Adds a Marathon application to our list.
+*/
 VCL_VOID 
 vmod_server_setup_application(VRT_CTX, struct vmod_marathon_server *srv, 
                                    VCL_STRING id, VCL_INT port_index, 
@@ -549,19 +579,25 @@ vmod_server_setup_application(VRT_CTX, struct vmod_marathon_server *srv,
   app->between_bytes_timeout = between_bytes_timeout;
   app->max_connections = max_connections;
   app->vcl_name = srv->vcl_name;
-
   app->curbe = NULL;
+  app->lck = Lck_CreateClass("marathon.application");
 
-  Lck_New(&app->mtx, app_lck);
+  Lck_New(&app->mtx, app->lck);
   VTAILQ_INSERT_TAIL(&srv->app_list, app, next);
   marathon_schedule_update(srv, app);
 }
 
+/*
+* VCL function .application()
+* Returns current active backends for a given marathon application.
+*/
 VCL_BACKEND 
 vmod_server_application(VRT_CTX, struct vmod_marathon_server *srv,
                         VCL_STRING id) 
 {
   struct marathon_application *app = NULL;
+
+  VSLb(ctx->vsl, SLT_Debug, "Call to .application(%s)", id);
 
   app = marathon_get_app(srv, id);
 
@@ -592,17 +628,23 @@ vmod_server_application(VRT_CTX, struct vmod_marathon_server *srv,
   return NULL;
 }
 
+/*
+* Start SSE event thread and marathon update thread.
+*/
 static void
 marathon_start(struct vmod_marathon_server *srv) {
-  MARATHON_LOG_INFO(NULL, "Starting threads");
+  MARATHON_LOG_INFO(NULL, "Starting SSE thread.");
   AZ(pthread_create(&srv->sse_th, NULL, &sse_event_thread_func, srv));
+  MARATHON_LOG_INFO(NULL, "Starting update thread.");
   AZ(pthread_create(&srv->update_th, NULL, &marathon_update_thread_func, srv));
 }
 
+/*
+* Stop running threads and free backend list.
+*/
 static void
 marathon_stop(struct vmod_marathon_server *srv) {
   struct marathon_application *app = NULL, *appn = NULL;
-  struct marathon_backend *mbe = NULL, *mben = NULL;
   struct vrt_ctx ctx;
 
   // TODO: We need to stop the ongoing curl calls somehow.
@@ -623,22 +665,14 @@ marathon_stop(struct vmod_marathon_server *srv) {
 
   AZ(srv->active);
 
-  // Loop through all apps.
   VTAILQ_FOREACH_SAFE(app, &srv->app_list, next, appn) {
-    MARATHON_LOG_INFO(NULL, "Cleaning upp :%s", app->id);
-    // Loop through and free all backends.
-    VTAILQ_FOREACH_SAFE(mbe, &app->belist, next, mben) {
-      MARATHON_LOG_INFO(NULL, "  * Removing backend %s:%s", mbe->host_str, mbe->port_str);
-      free(mbe->host_str);
-      free(mbe->port_str);
-      VRT_delete_backend(&ctx, &mbe->dir);
-      // TODO: Check if VRT_delete_backend also does a free of ipv(4|6)_addr and port.
-      VTAILQ_REMOVE(&app->belist, mbe, next);
-      FREE_OBJ(mbe);
-    }
+    free_be_list(&ctx, app);
   }
 }
 
+/*
+* Varnish' event callback function.
+*/
 int
 event_func(VRT_CTX, struct vmod_priv *vcl_priv, enum vcl_event_e e)
 {
@@ -648,8 +682,6 @@ event_func(VRT_CTX, struct vmod_priv *vcl_priv, enum vcl_event_e e)
   switch(e) {
     case VCL_EVENT_LOAD:
       MARATHON_LOG_INFO(ctx, "VCL_EVENT_LOAD");
-      app_lck = Lck_CreateClass("marathon.application");
-      queue_lck = Lck_CreateClass("marathon.updatequeue");
       return(0);
     break;
 
@@ -685,12 +717,16 @@ event_func(VRT_CTX, struct vmod_priv *vcl_priv, enum vcl_event_e e)
   return 0;
 }
 
-/* Constructor for marathon.server object. */
+/* 
+ * Constructor for marathon.server object.
+*/
 VCL_VOID
 vmod_server__init(VRT_CTX, struct vmod_marathon_server **srvp,
                   const char *vcl_name, VCL_STRING endpoint)
 {
   struct vmod_marathon_server *srv = NULL;
+
+  MARATHON_LOG_INFO(NULL, "Call to __init");
 
   CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
 
@@ -712,16 +748,21 @@ vmod_server__init(VRT_CTX, struct vmod_marathon_server **srvp,
 
   *srvp = srv;
 
-  Lck_New(&srv->queue_mtx, queue_lck);
+  srv->queue_lck = Lck_CreateClass("marathon.updatequeue");
+  Lck_New(&srv->queue_mtx, srv->queue_lck);
   VTAILQ_INSERT_TAIL(&objects, srv, next);
 }
 
-/* Destructor for marathon.server object. */
+/* 
+ * Destructor for marathon.server object.
+*/
 VCL_VOID
 vmod_server__fini(struct vmod_marathon_server **srvp)
 {
   struct vmod_marathon_server *srv;
   struct marathon_application *app = NULL, *appn = NULL;
+
+  MARATHON_LOG_INFO(NULL, "Call to __fini");
 
   if (srvp == NULL || *srvp == NULL) return;
 
@@ -735,11 +776,13 @@ vmod_server__fini(struct vmod_marathon_server **srvp)
     free(app->id);
     free(app->hosthdr);
     Lck_Delete(&app->mtx);
+    VSM_Free(app->lck);
     FREE_OBJ(app);
     AZ(app);
   }
 
   Lck_Delete(&srv->queue_mtx);
+  VSM_Free(srv->queue_lck);
 
   FREE_OBJ(srv);
   AZ(srv);
