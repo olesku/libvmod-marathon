@@ -550,11 +550,11 @@ sse_event_thread_func(void *ptr)
 }
 
 /*
-* VCL function .setup_application()
+* VCL function .add_application()
 * Adds a Marathon application to our list.
 */
 VCL_VOID 
-vmod_server_setup_application(VRT_CTX, struct vmod_marathon_server *srv, 
+vmod_server_add_application(VRT_CTX, struct vmod_marathon_server *srv, 
                                    VCL_STRING id, VCL_INT port_index, 
                                    VCL_PROBE probe, VCL_STRING host_header, 
                                    VCL_DURATION connect_timeout, VCL_DURATION first_byte_timeout,
@@ -588,11 +588,11 @@ vmod_server_setup_application(VRT_CTX, struct vmod_marathon_server *srv,
 }
 
 /*
-* VCL function .application()
+* VCL function .backend()
 * Returns current active backends for a given marathon application.
 */
 VCL_BACKEND 
-vmod_server_application(VRT_CTX, struct vmod_marathon_server *srv,
+vmod_server_backend(VRT_CTX, struct vmod_marathon_server *srv,
                         VCL_STRING id) 
 {
   struct marathon_application *app = NULL;

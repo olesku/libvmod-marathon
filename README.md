@@ -8,7 +8,7 @@ It listens on Marathon's SSE eventbus and update configured applications as thei
 
 ### Methods
 ---
-``` .setup_application(id = "/myapp", options) ```
+``` .add_application(id = "/myapp", options) ```
 
 Configures application settings and must be called in vcl_init() for every application you are going to use as backend.
 
@@ -27,9 +27,9 @@ Configures application settings and must be called in vcl_init() for every appli
 | max_connections       | max_connections             | Varnish default        |
 | proxy_header          | proxy_header                | 0                      |
 
-``` .application("/myapp") ```
+``` .backend("/myapp") ```
 
-Returns backends for the application /myapp.
+Returns a round-robin backend for the application /myapp.
 
 #### Example VCL
 ---
@@ -41,20 +41,20 @@ import marathon;
 sub vcl_init {
   # Initialize marathon handler.
 
-  new my_marathon = marathon.server("http://marathon.mydomain.tld");
+  new my_marathon = marathon.init("http://marathon.mydomain.tld");
 
   # Setup applications we are going to use.
-  # A call to setup_application is required for all applications you are going to use as backends.
+  # A call to add_application is required for all applications you are going to use as backends.
 
-   my_marathon.setup_application("/hello-world");
-   my_marathon.setup_application("/myapp");
+   my_marathon.add_application("/hello-world");
+   my_marathon.add_application("/myapp");
 }
 
 sub vcl_recv {
   if (req.http.Host == "hello.mydomain.tld") {
-    set req.backend_hint =  my_marathon.application("/hello-world");
+    set req.backend_hint =  my_marathon.backend("/hello-world");
   } else {
-    set req.backend_hint = my_marathon.application("/myapp");
+    set req.backend_hint = my_marathon.backend("/myapp");
   }
   return(pass);
 }
