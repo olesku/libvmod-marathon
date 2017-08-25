@@ -481,8 +481,8 @@ curl_sse_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
   }
 
   /* If we have some data remaining in buffer after end of current event
-  * add it back to the curl buffer so it wil be included on next call.
-  */
+   * add it back to the curl buffer so it wil be included on next call.
+   */
   unsigned long until_crlf_len = (event_tail - buf->data) + 2;
   if (buf->len == until_crlf_len) {
     zero_curl_buffer(buf);
