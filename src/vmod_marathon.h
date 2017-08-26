@@ -3,6 +3,7 @@
 #define SSE_EVENT_SIZE_MAX 64
 #define SSE_DATA_SIZE_MAX 4096
 #define CURL_BUF_SIZE_MAX 65536 // 64kB
+#define SSE_PING_TIMEOUT  30
 
 #define IPBUFSIZ (VTCP_ADDRBUFSIZE + VTCP_PORTBUFSIZE + 2)
 
@@ -55,6 +56,8 @@ struct marathon_backend {
   VTAILQ_ENTRY(marathon_backend) next;
 };
 
+VTAILQ_HEAD(marathon_backend_head, marathon_backend);
+
 struct marathon_application {
   unsigned int magic;
   #define VMOD_MARATHON_APPLICATION_MAGIC 0x8476ab3f
@@ -66,9 +69,20 @@ struct marathon_application {
   const struct vrt_backend_probe	*probe;
   struct marathon_backend *curbe;
   VRT_BACKEND_FIELDS();
-  VTAILQ_HEAD(,marathon_backend) belist;
+  struct marathon_backend_head belist;
   VTAILQ_ENTRY(marathon_application) next;
 };
+
+VTAILQ_HEAD(marathon_application_head, marathon_application);
+
+struct marathon_update_queue_item {
+  unsigned int magic;
+  #define MARATHON_UPDATE_QUEUE_ITEM_MAGIC 0x8476ab7f
+  struct marathon_application *app;
+  VTAILQ_ENTRY(marathon_update_queue_item) next;
+};
+
+VTAILQ_HEAD(marathon_update_queue, marathon_update_queue_item);
 
 struct vmod_marathon_server {
   unsigned int magic;
@@ -84,8 +98,8 @@ struct vmod_marathon_server {
   struct lock                       queue_mtx;
   struct VSC_C_lck                  *queue_lck;
   VTAILQ_ENTRY(vmod_marathon_server) next;
-  VTAILQ_HEAD(,marathon_application) app_list;
-  VTAILQ_HEAD(,marathon_application) update_queue;
+  struct marathon_application_head app_list;
+  struct marathon_update_queue update_queue;
 };
 
 struct curl_recvbuf {
@@ -98,6 +112,13 @@ struct sse_cb_ctx {
   #define SSE_CB_CTX_MAGIC 0x8476ab5f
   struct curl_recvbuf *buf;
   struct vmod_marathon_server *srv;
+};
+
+struct curl_xfer_status {
+  unsigned magic;
+  #define CURL_XFER_STATUS_MAGIC 0x8476ab6f
+  curl_off_t dlnow;
+  double time;
 };
 
 VTAILQ_HEAD(vmod_marathon_head, vmod_marathon_server) objects;

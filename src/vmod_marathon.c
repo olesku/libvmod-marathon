@@ -74,6 +74,8 @@ curl_fetch(struct curl_recvbuf *buf, const char* url)
   curl = curl_easy_init();
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, buf);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_fetch_cb);
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
   curl_easy_setopt(curl, CURLOPT_URL, url);
 
   res = curl_easy_perform(curl);
@@ -239,6 +241,10 @@ marathon_update_application (VRT_CTX, struct vmod_marathon_server *srv,
   char endpoint[1024];
   CURLcode res;
 
+  CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
+  CHECK_OBJ_NOTNULL(app, VMOD_MARATHON_APPLICATION_MAGIC);
+
+
   zero_curl_buffer(&buf);
 
   MARATHON_LOG_INFO(ctx, "marathon_update_application: %s", app->id);
@@ -308,36 +314,30 @@ marathon_update_application (VRT_CTX, struct vmod_marathon_server *srv,
 */
 static void
 marathon_schedule_update(struct vmod_marathon_server *srv, struct marathon_application *app) {
-  struct marathon_application *qelm = NULL;
+
+  struct marathon_update_queue_item *queue_elm = NULL;
 
   CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
   CHECK_OBJ_NOTNULL(app, VMOD_MARATHON_APPLICATION_MAGIC);
 
   Lck_Lock(&srv->queue_mtx);
-
-  // First ensure an update is not already scheduled for this app.
-  VTAILQ_FOREACH(qelm, &srv->update_queue, next) {
-    if (qelm == app) {
+  VTAILQ_FOREACH(queue_elm, &srv->update_queue, next) {
+    if (queue_elm->app == app) {
       Lck_Unlock(&srv->queue_mtx);
       return;
     }
   }
 
-  // Add it to the update queue.
-  VTAILQ_INSERT_TAIL(&srv->update_queue, app, next);
-  Lck_Unlock(&srv->queue_mtx);
-}
+  queue_elm = NULL;
 
-/*
-* Schedule update of all marathon_application's.
-*/
-static void
-marathon_schedule_update_all(struct vmod_marathon_server *srv) {
-  struct marathon_application *app = NULL;
-  VTAILQ_FOREACH(app, &srv->app_list, next) {
-    CHECK_OBJ_NOTNULL(app, VMOD_MARATHON_APPLICATION_MAGIC);
-    marathon_schedule_update(srv, app);
-  }
+  ALLOC_OBJ(queue_elm, MARATHON_UPDATE_QUEUE_ITEM_MAGIC);
+  CHECK_OBJ_NOTNULL(queue_elm, MARATHON_UPDATE_QUEUE_ITEM_MAGIC);
+
+  queue_elm->app = app;
+
+  VTAILQ_INSERT_TAIL(&srv->update_queue, queue_elm, next);
+  MARATHON_LOG_INFO(NULL, "Adding %s to update queue", app->id);
+  Lck_Unlock(&srv->queue_mtx);
 }
 
 /*
@@ -345,18 +345,19 @@ marathon_schedule_update_all(struct vmod_marathon_server *srv) {
 */
 static void
 marathon_perform_update(struct vmod_marathon_server *srv) {
+  CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
   // Trigger update condition.
   AZ(pthread_cond_broadcast(&srv->update_cond));
 }
 
 /*
 * Thread that reads scheduled updates and do the actual update.
-* Woken up by triggering sev->update_cond.
+* Woken up by triggering srv->update_cond.
 */
 void *
-marathon_update_thread_func(void* ptr) {
+marathon_update_thread_func(void *ptr) {
   struct vmod_marathon_server *srv = NULL;
-  struct marathon_application *qelm = NULL;
+  struct marathon_update_queue_item *queue_elm = NULL, *queue_elm_n = NULL;
   struct vrt_ctx ctx;
   
   CAST_OBJ_NOTNULL(srv, ptr, VMOD_MARATHON_SERVER_MAGIC);
@@ -364,24 +365,28 @@ marathon_update_thread_func(void* ptr) {
   INIT_OBJ(&ctx, VRT_CTX_MAGIC);
   ctx.vcl = srv->vcl;
 
-  do {
+  while(srv->active) {
     Lck_Lock(&srv->queue_mtx);
-    Lck_CondWait(&srv->update_cond, &srv->queue_mtx, VTIM_real() + 30); // TODO: Consider if we actually need a timeout here.
-    Lck_Unlock(&srv->queue_mtx);
+    Lck_CondWait(&srv->update_cond, &srv->queue_mtx, VTIM_real() + 30);
+    MARATHON_LOG_INFO(NULL, "UPDATE QUEUE RUN");
 
     if (!srv->active) return NULL;
 
-    while(!VTAILQ_EMPTY(&srv->update_queue)) {
-      qelm = VTAILQ_FIRST(&srv->update_queue);
-      CHECK_OBJ_NOTNULL(qelm, VMOD_MARATHON_APPLICATION_MAGIC);
-
-      if (marathon_update_application(&ctx, srv, qelm)) {
-        Lck_Lock(&srv->queue_mtx);
-        VTAILQ_REMOVE(&srv->update_queue, qelm, next);
-        Lck_Unlock(&srv->queue_mtx);
+    VTAILQ_FOREACH_SAFE(queue_elm, &srv->update_queue, next, queue_elm_n) {
+      CHECK_OBJ_NOTNULL(queue_elm, MARATHON_UPDATE_QUEUE_ITEM_MAGIC);
+      MARATHON_LOG_INFO(NULL, "UPDATE QUEUE: %s", queue_elm->app->id);
+      if (marathon_update_application(&ctx, srv, queue_elm->app)) {
+        VTAILQ_REMOVE(&srv->update_queue, queue_elm, next);
+        FREE_OBJ(queue_elm);
+        AZ(queue_elm);
       }
     }
-  } while(1);
+
+    VTAILQ_INIT(&srv->update_queue);
+    Lck_Unlock(&srv->queue_mtx);
+  }
+
+  return NULL;
 }
 
 /*
@@ -497,11 +502,41 @@ curl_sse_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
 }
 
 /*
+* Timeout SSE socket if we dont recieve any data in SSE_PING_TIMEOUT seconds.
+*/
+int
+sse_progress_callback(void *clientp, curl_off_t dltotal,
+                      curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow)
+{
+  struct curl_xfer_status *status = NULL;
+
+  CAST_OBJ_NOTNULL(status, clientp, CURL_XFER_STATUS_MAGIC);
+
+  if (status->time == 0)
+    status->time = VTIM_real();
+
+  if (VTIM_real() >= (status->time + SSE_PING_TIMEOUT)) {
+    if (dlnow <= status->dlnow) {
+      status->dlnow = 0;
+      status->time = VTIM_real();
+      MARATHON_LOG_ERROR(NULL, "SSE Eventbus: No ping received in %d seconds.", SSE_PING_TIMEOUT);
+      return -1;
+    }
+
+    status->dlnow = dlnow;
+    status->time = VTIM_real();
+  }
+
+  return 0;
+}
+
+/*
 * Listen for SSE events from Marathon and update apps accordingly.
 */
 static void* 
 sse_event_thread_func(void *ptr) 
 {
+  struct marathon_application *app = NULL;
   struct vmod_marathon_server *srv = NULL;
   struct curl_recvbuf buf;
   struct sse_cb_ctx cb_ctx;
@@ -510,8 +545,12 @@ sse_event_thread_func(void *ptr)
   CURL *curl;
   CURLcode res;
 
+  struct curl_xfer_status xfr_status = { 0, 0 };
+
   CAST_OBJ_NOTNULL(srv, ptr, VMOD_MARATHON_SERVER_MAGIC);
   INIT_OBJ(&cb_ctx, SSE_CB_CTX_MAGIC);
+
+  INIT_OBJ(&xfr_status, CURL_XFER_STATUS_MAGIC);
 
   cb_ctx.srv = srv;
   cb_ctx.buf = &buf;
@@ -525,14 +564,15 @@ sse_event_thread_func(void *ptr)
   headers = curl_slist_append(headers, "Accept: text/event-stream");
   res = curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
+  curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+  curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, &sse_progress_callback);
+  curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &xfr_status);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &cb_ctx);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_sse_cb);
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
   curl_easy_setopt(curl, CURLOPT_URL, endpoint);
 
-  // TODO: We should have some sort of timeout here.. Checking for SSE pings is probably the best approach.
-
   while(srv->active) {
-    marathon_schedule_update_all(srv);
     marathon_perform_update(srv);
 
     MARATHON_LOG_INFO(NULL, "Starting SSE connection.");
@@ -541,6 +581,15 @@ sse_event_thread_func(void *ptr)
     if (res != CURLE_OK) {
       MARATHON_LOG_ERROR(NULL, "curl failed: %s\n", curl_easy_strerror(res));
     }
+
+    /*
+     * If we reach this point we should reschedule updates of all applications.
+     */
+    VTAILQ_FOREACH(app, &srv->app_list, next) {
+      marathon_schedule_update(srv, app);
+    }
+
+    usleep(1000000);
   }
 
   curl_easy_cleanup(curl);
@@ -593,17 +642,18 @@ vmod_server_add_application(VRT_CTX, struct vmod_marathon_server *srv,
 */
 VCL_BACKEND 
 vmod_server_backend(VRT_CTX, struct vmod_marathon_server *srv,
-                        VCL_STRING id) 
+                    VCL_STRING id)
 {
   struct marathon_application *app = NULL;
 
-  VSLb(ctx->vsl, SLT_Debug, "Call to .application(%s)", id);
+  VSLb(ctx->vsl, SLT_Debug, "Call to .backend(%s)", id);
 
   app = marathon_get_app(srv, id);
 
   if (app != NULL) {
     Lck_Lock(&app->mtx);
     if (VTAILQ_EMPTY(&app->belist)) {
+      VSLb(ctx->vsl, SLT_Debug, "APP %s: belist is empty", id);
       Lck_Unlock(&app->mtx);
       return NULL;
     }
@@ -625,6 +675,7 @@ vmod_server_backend(VRT_CTX, struct vmod_marathon_server *srv,
     return app->curbe->dir;
   } 
 
+  VSLb(ctx->vsl, SLT_Debug, "APP %s == NULL", id);
   return NULL;
 }
 
