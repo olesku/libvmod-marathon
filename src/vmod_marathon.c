@@ -656,7 +656,7 @@ curl_sse_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
         }
       }
       yajl_tree_free(node);
-    } // TODO: Handle delete event.
+    } // TODO: Handle delete and health_status_changed_event event.
   }
 
   /* If we have some data remaining in buffer after end of current event
@@ -693,6 +693,7 @@ sse_progress_callback(void *clientp, curl_off_t dltotal,
 
   if (VTIM_real() >= (cb_ctx->last_recv_time + SSE_PING_TIMEOUT)) {
     MARATHON_LOG_ERROR(NULL, "SSE Eventbus: No data received in %d seconds. Reconnecting.", SSE_PING_TIMEOUT);
+    cb_ctx->last_recv_time = VTIM_real();
     return -1;
   }
 
