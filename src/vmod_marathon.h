@@ -125,6 +125,7 @@ struct sse_cb_ctx {
   #define SSE_CB_CTX_MAGIC 0x8476ab5f
   struct curl_recvbuf *buf;
   struct vmod_marathon_server *srv;
+  double last_recv_time;
 };
 
 struct curl_xfer_status {

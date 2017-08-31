@@ -566,12 +566,15 @@ curl_sse_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
   srv = cb_ctx->srv;
   buf = cb_ctx->buf;
 
+  recv_len = (size * nmemb);
+
   if (!srv->active)
     return CURL_READFUNC_ABORT;
 
-  recv_len = (size * nmemb);
-  req_alloc = buf->data_len+recv_len+1;
+  if (recv_len > 0)
+    cb_ctx->last_recv_time = VTIM_real();
 
+  req_alloc = buf->data_len+recv_len+1;
   if (req_alloc > CURL_BUF_SIZE_MAX) {
     MARATHON_LOG_WARNING(NULL, "curl_sse_cb: Curl fetch buffer exceeded CURL_BUF_SIZE_MAX (%d > %d>. Discarding data.", 
       req_alloc, CURL_BUF_SIZE_MAX);
@@ -680,27 +683,17 @@ int
 sse_progress_callback(void *clientp, curl_off_t dltotal,
                       curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow)
 {
-  struct curl_xfer_status *status = NULL;
+  struct sse_cb_ctx *cb_ctx = NULL;
 
-  CAST_OBJ_NOTNULL(status, clientp, CURL_XFER_STATUS_MAGIC);
-  CHECK_OBJ_NOTNULL(status->srv, VMOD_MARATHON_SERVER_MAGIC);
+  CAST_OBJ_NOTNULL(cb_ctx, clientp, SSE_CB_CTX_MAGIC);
+  CHECK_OBJ_NOTNULL(cb_ctx->srv, VMOD_MARATHON_SERVER_MAGIC);
 
-  if (status->srv->active == 0)
+  if (cb_ctx->srv->active == 0)
     return -1;
 
-  if (status->time == 0)
-    status->time = VTIM_real();
-
-  if (VTIM_real() >= (status->time + SSE_PING_TIMEOUT)) {
-    if (dlnow <= status->dlnow) {
-      status->dlnow = 0;
-      status->time = VTIM_real();
-      MARATHON_LOG_ERROR(NULL, "SSE Eventbus: No ping received in %d seconds. Reconnecting.", SSE_PING_TIMEOUT);
-      return -1;
-    }
-
-    status->dlnow = dlnow;
-    status->time = VTIM_real();
+  if (VTIM_real() >= (cb_ctx->last_recv_time + SSE_PING_TIMEOUT)) {
+    MARATHON_LOG_ERROR(NULL, "SSE Eventbus: No data received in %d seconds. Reconnecting.", SSE_PING_TIMEOUT);
+    return -1;
   }
 
   return 0;
@@ -730,6 +723,7 @@ sse_event_thread_func(void *ptr)
   cb_ctx.srv = srv;
   cb_ctx.buf = &buf;
   xfr_status.srv = srv;
+  cb_ctx.last_recv_time = VTIM_real();
 
   snprintf(endpoint, 1024, "%s%s", srv->marathon_endpoint, MARATHON_SSE_PATH);
   MARATHON_LOG_INFO(NULL, "SSE Endpoint: %s", endpoint);
@@ -742,7 +736,7 @@ sse_event_thread_func(void *ptr)
 
   curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
   curl_easy_setopt(curl, CURLOPT_PROGRESSFUNCTION, &sse_progress_callback);
-  curl_easy_setopt(curl, CURLOPT_PROGRESSDATA, &xfr_status);
+  curl_easy_setopt(curl, CURLOPT_PROGRESSDATA, &cb_ctx);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &cb_ctx);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_sse_cb);
   curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
