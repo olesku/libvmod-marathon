@@ -2,8 +2,8 @@
 #define MARATHON_APP_PATH "/v2/apps"
 #define SSE_EVENT_SIZE_MAX 64
 #define SSE_DATA_SIZE_MAX 4096
-#define CURL_BUF_SIZE_MAX 65536 // 64kB
-#define SSE_PING_TIMEOUT  30
+#define CURL_BUF_SIZE_MAX 8388608 // 8MiB.
+#define SSE_PING_TIMEOUT  60
 
 #define IPBUFSIZ (VTCP_ADDRBUFSIZE + VTCP_PORTBUFSIZE + 2)
 
@@ -46,13 +46,22 @@
 #define MARATHON_LOG_INFO(ctx, message, ...) \
     MARATHON_LOG(ctx, LOG_INFO, message, ##__VA_ARGS__)
 
+struct marathon_backend_config {
+  VRT_BACKEND_FIELDS();
+  const struct vrt_backend_probe	*probe;
+  unsigned int port_index;
+
+};
+
 struct marathon_backend {
   unsigned int magic;
   #define VMOD_MARATHON_BACKEND_MAGIC 0x8476ab2f
   double time_added;
+  struct marathon_backend_config config;
   struct director *dir;
-  char *host_str;
-  char *port_str;
+  char *ipv4_addr;
+  char *ipv6_addr;
+  char *port;
   VTAILQ_ENTRY(marathon_backend) next;
 };
 
@@ -60,16 +69,15 @@ VTAILQ_HEAD(marathon_backend_head, marathon_backend);
 
 struct marathon_application {
   unsigned int magic;
-  #define VMOD_MARATHON_APPLICATION_MAGIC 0x8476ab3f
-  struct VSC_C_lck *lck;
-  struct lock mtx;
-  char *id;
-  unsigned int port_index;
   double last_update;
-  const struct vrt_backend_probe	*probe;
+  #define VMOD_MARATHON_APPLICATION_MAGIC 0x8476ab3f
+  char *id;
+  struct marathon_backend_config backend_config;
   struct marathon_backend *curbe;
   VRT_BACKEND_FIELDS();
   struct marathon_backend_head belist;
+  struct VSC_C_lck *lck;
+  struct lock mtx;
   VTAILQ_ENTRY(marathon_application) next;
 };
 
@@ -100,11 +108,16 @@ struct vmod_marathon_server {
   VTAILQ_ENTRY(vmod_marathon_server) next;
   struct marathon_application_head app_list;
   struct marathon_update_queue update_queue;
+  struct marathon_backend_config default_backend_config;
 };
 
 struct curl_recvbuf {
-  size_t len;  
-  char data[CURL_BUF_SIZE_MAX];
+  unsigned int magic;
+  #define CURL_RECVBUF_MAGIC 0x8476ab8f
+  #define CURL_RECVBUF_INITIAL_ALLOC_SIZE 16384
+  size_t size;
+  size_t data_len;
+  char *data;
 };
 
 struct sse_cb_ctx {
@@ -119,6 +132,7 @@ struct curl_xfer_status {
   #define CURL_XFER_STATUS_MAGIC 0x8476ab6f
   curl_off_t dlnow;
   double time;
+  struct vmod_marathon_server *srv;
 };
 
 VTAILQ_HEAD(vmod_marathon_head, vmod_marathon_server) objects;
