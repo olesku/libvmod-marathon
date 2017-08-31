@@ -332,7 +332,11 @@ marathon_update_application (struct vmod_marathon_server *srv,
       }
 
       // Only add tasks that is in TASK_RUNNING state.
-      if (YAJL_IS_STRING(state) && strncmp(YAJL_GET_STRING(state), "TASK_RUNNING", 12) != 0)
+      if (!YAJL_IS_STRING(state))
+        continue;
+
+      const char *state_str = YAJL_GET_STRING(state);
+      if (strncmp(state_str, "TASK_RUNNING", 12) != 0)
         continue;
 
       unsigned int port_index = 0;
@@ -737,8 +741,8 @@ sse_event_thread_func(void *ptr)
   res = curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
   curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-  curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, &sse_progress_callback);
-  curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &xfr_status);
+  curl_easy_setopt(curl, CURLOPT_PROGRESSFUNCTION, &sse_progress_callback);
+  curl_easy_setopt(curl, CURLOPT_PROGRESSDATA, &xfr_status);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &cb_ctx);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_sse_cb);
   curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
