@@ -1,0 +1,31 @@
+FROM centos:7
+MAINTAINER Ole Fredrik Skudsvik <ole.skudsvik@gmail.com>
+
+WORKDIR /root
+
+RUN yum -y makecache && \
+    yum -y upgrade
+
+RUN curl -O https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm  && \
+    rpm -Uhv epel-release-latest-7.noarch.rpm
+
+RUN yum install -y rpm-build jemalloc-devel libedit-devel ncurses-devel \
+                   python-docutils python-sphinx gcc git automake autoconf libtool mock make \
+                   libcurl-devel yajl-devel vim
+
+RUN curl -s https://packagecloud.io/install/repositories/varnishcache/varnish51/script.rpm.sh | bash
+
+RUN yum -y install varnish varnish-devel varnish-libs varnish-libs-devel
+
+RUN mkdir -p /root/rpmbuild/SPECS && \
+    mkdir -p /root/rpmbuild/SOURCES/libvmod-marathon
+
+COPY vmod-marathon.spec /root/rpmbuild/SPECS
+COPY . /root/rpmbuild/SOURCES/libvmod-marathon
+
+RUN cd /root/rpmbuild/SOURCES/ && \
+    tar -zcvf libvmod-marathon.tar.gz libvmod-marathon
+
+RUN rpmbuild -ba /root/rpmbuild/SPECS/vmod-marathon.spec
+
+CMD /bin/bash
