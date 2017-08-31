@@ -715,15 +715,11 @@ sse_event_thread_func(void *ptr)
   CURL *curl;
   CURLcode res;
 
-  struct curl_xfer_status xfr_status = { 0, 0 };
-
   CAST_OBJ_NOTNULL(srv, ptr, VMOD_MARATHON_SERVER_MAGIC);
   INIT_OBJ(&cb_ctx, SSE_CB_CTX_MAGIC);
-  INIT_OBJ(&xfr_status, CURL_XFER_STATUS_MAGIC);
 
   cb_ctx.srv = srv;
   cb_ctx.buf = &buf;
-  xfr_status.srv = srv;
   cb_ctx.last_recv_time = VTIM_real();
 
   snprintf(endpoint, 1024, "%s%s", srv->marathon_endpoint, MARATHON_SSE_PATH);

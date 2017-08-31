@@ -128,13 +128,5 @@ struct sse_cb_ctx {
   double last_recv_time;
 };
 
-struct curl_xfer_status {
-  unsigned magic;
-  #define CURL_XFER_STATUS_MAGIC 0x8476ab6f
-  curl_off_t dlnow;
-  double time;
-  struct vmod_marathon_server *srv;
-};
-
 VTAILQ_HEAD(vmod_marathon_head, vmod_marathon_server) objects;
 extern struct vmod_marathon_head objects;
