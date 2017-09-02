@@ -1,8 +1,6 @@
 FROM centos:7
 MAINTAINER Ole Fredrik Skudsvik <ole.skudsvik@gmail.com>
 
-WORKDIR /root
-
 RUN yum -y makecache && \
     yum -y upgrade
 
@@ -27,5 +25,7 @@ RUN cd /root/rpmbuild/SOURCES/ && \
     tar -zcvf libvmod-marathon.tar.gz libvmod-marathon
 
 RUN rpmbuild -ba /root/rpmbuild/SPECS/vmod-marathon.spec
+
+WORKDIR /root/rpmbuild/RPMS
 
 CMD /bin/bash

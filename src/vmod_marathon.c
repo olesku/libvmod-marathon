@@ -423,10 +423,9 @@ add_application(struct vmod_marathon_server *srv, const char *appid)
             sizeof(struct marathon_backend_config)));
 
   app->id = strdup(appid);
-
   app->curbe = NULL;
-
   app->lck = Lck_CreateClass("marathon.application");
+
   AN(app->lck);
   Lck_New(&app->mtx, app->lck);
 
@@ -752,6 +751,8 @@ sse_event_thread_func(void *ptr)
 
     if (!srv->active)
       break;
+
+    MARATHON_LOG_INFO(NULL, "Disconnected from SSE Eventbus, reconnecting.");
 
     /*
      * If we reach this point we should reschedule updates of all applications.

@@ -2,7 +2,7 @@
 
 ### Description
 ---
-This module dynamically fetches applications from Marathon and makes them available as backends in your Varnish VCL.
+This module dynamically fetches applications from [Marathon](https://mesosphere.github.io/marathon/) and makes them available as backends in your Varnish VCL.
 
 It listens on Marathon's SSE eventbus and will ensures the backends is always kept in a consistent state without requiring to reload Varnish.
 
