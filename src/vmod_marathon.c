@@ -236,8 +236,8 @@ add_backend(struct vmod_marathon_server *srv, struct marathon_application *app,
   sa6 = get_suckaddr(host, port, AF_INET6);
 
   if (sa4 != NULL)
-		get_addrname(ipv4_addr, sa4);
-	if (sa6 != NULL)
+    get_addrname(ipv4_addr, sa4);
+  if (sa6 != NULL)
     get_addrname(ipv6_addr, sa6);
 
   ALLOC_OBJ(mbe, VMOD_MARATHON_BACKEND_MAGIC);
