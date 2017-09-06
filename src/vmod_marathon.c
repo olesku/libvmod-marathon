@@ -330,11 +330,12 @@ marathon_update_application (struct vmod_marathon_server *srv,
         continue;
       }
 
-      // Only add tasks that is in TASK_RUNNING state.
       if (!YAJL_IS_STRING(state))
         continue;
 
       const char *state_str = YAJL_GET_STRING(state);
+
+      // Only add tasks that is in TASK_RUNNING state.
       if (strncmp(state_str, "TASK_RUNNING", 12) != 0)
         continue;
 
