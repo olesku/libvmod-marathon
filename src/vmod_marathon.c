@@ -249,7 +249,6 @@ add_backend(struct vmod_marathon_server *srv, struct marathon_application *app,
 
   INIT_OBJ(&be, VRT_BACKEND_MAGIC);
 
-  be.probe = NULL;
   be.ipv4_suckaddr = sa4;
   be.ipv6_suckaddr = sa6;
   be.ipv4_addr = mbe->ipv4_addr;
