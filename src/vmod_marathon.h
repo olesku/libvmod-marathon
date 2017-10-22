@@ -59,6 +59,7 @@ struct marathon_backend {
   double time_added;
   struct marathon_backend_config config;
   struct director *dir;
+  char *vcl_name;
   char *ipv4_addr;
   char *ipv6_addr;
   char *port;
@@ -72,11 +73,15 @@ struct marathon_application {
   double last_update;
   #define VMOD_MARATHON_APPLICATION_MAGIC 0x8476ab3f
   char *id;
+  size_t id_len;
+  char *marathon_task_endpoint;
+
   struct marathon_backend_config backend_config;
   struct marathon_backend *curbe;
+  struct director dir;
   VRT_BACKEND_FIELDS();
   struct marathon_backend_head belist;
-  struct VSC_C_lck *lck;
+  struct VSC_lck *lck;
   struct lock mtx;
   VTAILQ_ENTRY(marathon_application) next;
 };
@@ -95,7 +100,8 @@ VTAILQ_HEAD(marathon_update_queue, marathon_update_queue_item);
 struct vmod_marathon_server {
   unsigned int magic;
   #define VMOD_MARATHON_SERVER_MAGIC 0x8476ab4f
-  char                              *marathon_endpoint;
+  char                              *marathon_app_endpoint;
+  char                              *marathon_sse_endpoint;
   VRT_CTX;
   char                              *vcl_name;
   struct vcl                        *vcl;
@@ -104,7 +110,7 @@ struct vmod_marathon_server {
   pthread_t                         update_th;
   pthread_cond_t                    update_cond;
   struct lock                       queue_mtx;
-  struct VSC_C_lck                  *queue_lck;
+  struct VSC_lck                  *queue_lck;
   VTAILQ_ENTRY(vmod_marathon_server) next;
   struct marathon_application_head app_list;
   struct marathon_update_queue update_queue;
