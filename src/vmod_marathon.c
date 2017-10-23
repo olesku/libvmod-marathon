@@ -181,6 +181,7 @@ free_be_list(struct vmod_marathon_server *srv, struct marathon_application *app)
   VRT_delete_backend(&ctx, &mbe->dir);
   VTAILQ_REMOVE(&app->belist, mbe, next);
   FREE_OBJ(mbe);
+  AZ(mbe);
 }
 
   VTAILQ_INIT(&app->belist);
@@ -190,11 +191,36 @@ free_be_list(struct vmod_marathon_server *srv, struct marathon_application *app)
 }
 
 /*
+* Free all labels assigned to a marathon_application.
+*/
+static void 
+free_label_list(struct marathon_application *app) 
+{
+  struct marathon_application_label *mlabel = NULL, *mlabel_next = NULL;
+
+  CHECK_OBJ_NOTNULL(app, VMOD_MARATHON_APPLICATION_MAGIC);
+
+  Lck_Lock(&app->mtx);
+
+  VTAILQ_FOREACH_SAFE(mlabel, &app->labels, next, mlabel_next) {
+    free(mlabel->key);
+    free(mlabel->val);
+    VTAILQ_REMOVE(&app->labels, mlabel, next);
+    FREE_OBJ(mlabel);
+    AZ(mlabel);
+  }
+
+  VTAILQ_INIT(&app->labels);
+
+  Lck_Unlock(&app->mtx);
+}
+
+/*
 * Get marathon_application from ID.
 * Returns NULL if not found.
 */
 static struct marathon_application* 
-marathon_get_app(struct vmod_marathon_server* srv, const char* id) 
+marathon_get_app(struct vmod_marathon_server *srv, const char *id)
 {
   struct marathon_application *obj = NULL;
   size_t id_len;
@@ -205,11 +231,49 @@ marathon_get_app(struct vmod_marathon_server* srv, const char* id)
   id_len = strlen(id);
 
   VTAILQ_FOREACH(obj, &srv->app_list, next) {
+    CHECK_OBJ_NOTNULL(obj, VMOD_MARATHON_APPLICATION_MAGIC);
     if (obj->id_len == id_len) {
-      if (strncmp(id, obj->id, id_len) == 0) {
+      if (memcmp(id, obj->id, id_len) == 0) {
         return obj;
       }
     } 
+  }
+
+  return NULL;
+}
+
+/*
+
+* Get marathon_application from label.
+* If multiple applications have the matching label the first match will be returned.
+* Returns NULL if not found.
+*/
+static struct marathon_application*
+marathon_get_app_by_label(struct vmod_marathon_server* srv, const char *key, const char *val)
+{
+  struct marathon_application *app = NULL;
+  struct marathon_application_label *label = NULL;
+  size_t key_len, val_len;
+
+  if (key == NULL || val == NULL)
+    return 0;
+
+  key_len = strlen(key);
+  val_len = strlen(val);
+
+  VTAILQ_FOREACH(app, &srv->app_list, next) {
+    CHECK_OBJ_NOTNULL(app, VMOD_MARATHON_APPLICATION_MAGIC);
+
+    if (!VTAILQ_EMPTY(&app->labels)) {
+      VTAILQ_FOREACH(label, &app->labels, next) {
+        CHECK_OBJ_NOTNULL(label, VMOD_MARATHON_APPLICATION_LABEL_MAGIC);
+        if (label->key_len == key_len && label->val_len == val_len) {
+          if (memcmp(label->key, key, label->key_len) == 0 && memcmp(label->val, val, label->val_len) == 0) {
+            return app;
+          }
+        }
+      }
+    }
   }
 
   return NULL;
@@ -333,86 +397,143 @@ add_backend(struct vmod_marathon_server *srv, struct marathon_application *app,
 }
 
 /*
-* Fetch backends for a given marathon_application from Marathon.
+* Fetch JSON from a URL into a yajl_val object.
 */
-static int 
-marathon_update_application (struct vmod_marathon_server *srv,
-                             struct marathon_application *app)
-{
+static int fetch_json_data(yajl_val *node, const char *endpoint) {
   struct curl_recvbuf buf;
   CURLcode res;
-
-  CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
-  CHECK_OBJ_NOTNULL(app, VMOD_MARATHON_APPLICATION_MAGIC);
+  char errbuf[1024];
 
   init_curl_buffer(&buf);
-
-  MARATHON_LOG_INFO(NULL, "Updating application %s.", app->id);
-
-  res = curl_fetch(&buf, app->marathon_task_endpoint);
-
+  res = curl_fetch(&buf, endpoint);
+  
   if (res != CURLE_OK) {
     free_curl_buffer(&buf);
     return 0;
   }
 
-  yajl_val node;
-  char errbuf[1024];
-  node = yajl_tree_parse((const char*)buf.data, errbuf, 1024);
+  *node = yajl_tree_parse((const char*)buf.data, errbuf, 1024);
+  free_curl_buffer(&buf);
 
-  if (node == NULL) {
-    free_curl_buffer(&buf);
+  if (*node == NULL) {
     return 0;
   }
 
-  const char *task_path[] = {"tasks", (const char *) 0};
-  const char *host_path[] = {"host", (const char *) 0};
-  const char *ports_path[] = {"ports", (const char *) 0};
-  const char *state_path[] = {"state", (const char *) 0};
+  return 1;
+}
 
-  yajl_val tasks = yajl_tree_get(node, task_path, yajl_t_array);
+/*
+* Fetch labels from Marathon.
+*/
+static int
+marathon_update_application_labels(struct marathon_application *app, yajl_val json_node) {
+  const char *labels_path[] = { "app", "labels", (const char *) 0 };
 
-  if (tasks && YAJL_IS_ARRAY(tasks)) {
-    free_be_list(srv, app);
+  yajl_val labels = yajl_tree_get(json_node, labels_path, yajl_t_object);
+
+  if (labels && YAJL_IS_OBJECT(labels)) {
+    free_label_list(app);
     Lck_Lock(&app->mtx);
+    for (unsigned int i = 0; i < labels->u.object.len; i++) {
+      const char* key = labels->u.object.keys[i];
+      yajl_val val = labels->u.object.values[i];
 
-    for (unsigned int i = 0; i < tasks->u.array.len; i++) {
-      yajl_val task = tasks->u.array.values[i];
-      yajl_val host = yajl_tree_get(task, host_path, yajl_t_string);
-      yajl_val ports = yajl_tree_get(task, ports_path, yajl_t_array);
-      yajl_val state = yajl_tree_get(task, state_path, yajl_t_string);
+      if (YAJL_IS_STRING(val)) {
+        const char *valstr = YAJL_GET_STRING(val);
+        struct marathon_application_label *mlabel;
+        ALLOC_OBJ(mlabel, VMOD_MARATHON_APPLICATION_LABEL_MAGIC);
+        CHECK_OBJ_NOTNULL(mlabel, VMOD_MARATHON_APPLICATION_LABEL_MAGIC);
 
-      if (!YAJL_IS_STRING(host) || !YAJL_IS_ARRAY(ports) || ports->u.array.len == 0 ||
-          !YAJL_IS_INTEGER(ports->u.array.values[0])) {
-        continue;
+        mlabel->key     = strdup(key);
+        mlabel->val     = strdup(valstr);
+        mlabel->key_len = strlen(mlabel->key);
+        mlabel->val_len = strlen(mlabel->val);
+
+        VTAILQ_INSERT_TAIL(&app->labels, mlabel, next);
       }
-
-      if (!YAJL_IS_STRING(state))
-        continue;
-
-      const char *state_str = YAJL_GET_STRING(state);
-
-      // Only add tasks that is in TASK_RUNNING state.
-      if (strncmp(state_str, "TASK_RUNNING", 12) != 0)
-        continue;
-
-      unsigned int port_index = 0;
-      if (ports->u.array.len > app->backend_config.port_index)
-        port_index = app->backend_config.port_index;
-      else 
-        port_index = 0;
-
-      char port[6];
-      snprintf(port, 6, "%lld", YAJL_GET_INTEGER(ports->u.array.values[port_index]));
-      add_backend(srv, app, YAJL_GET_STRING(host), port);
     }
-    
-    app->last_update = VTIM_real();
-
     Lck_Unlock(&app->mtx);
   }
 
-  free_curl_buffer(&buf);
+  return 1;
+}
+
+/*
+* Fetch backends from Marathon.
+*/
+static int marathon_update_backends(struct vmod_marathon_server *srv, struct marathon_application *app,
+                                    yajl_val json_node)
+{
+  const char *task_path[]  = {"app", "tasks", (const char *) 0};
+  const char *host_path[]  = {"host",  (const char *) 0};
+  const char *ports_path[] = {"ports", (const char *) 0};
+  const char *state_path[] = {"state", (const char *) 0};
+
+  yajl_val tasks = yajl_tree_get(json_node, task_path, yajl_t_array);
+
+    if (tasks && YAJL_IS_ARRAY(tasks)) {
+      free_be_list(srv, app);
+
+      Lck_Lock(&app->mtx);
+      for (unsigned int i = 0; i < tasks->u.array.len; i++) {
+        yajl_val task = tasks->u.array.values[i];
+        yajl_val host = yajl_tree_get(task, host_path, yajl_t_string);
+        yajl_val ports = yajl_tree_get(task, ports_path, yajl_t_array);
+        yajl_val state = yajl_tree_get(task, state_path, yajl_t_string);
+
+        if (!YAJL_IS_STRING(host) || !YAJL_IS_ARRAY(ports) || ports->u.array.len == 0 ||
+            !YAJL_IS_INTEGER(ports->u.array.values[0])) {
+          continue;
+        }
+
+        if (!YAJL_IS_STRING(state))
+          continue;
+
+        const char *state_str = YAJL_GET_STRING(state);
+
+        // Only add tasks that is in TASK_RUNNING state.
+        if (strncmp(state_str, "TASK_RUNNING", 12) != 0)
+          continue;
+
+        unsigned int port_index = 0;
+        if (ports->u.array.len > app->backend_config.port_index)
+          port_index = app->backend_config.port_index;
+        else
+          port_index = 0;
+
+        char port[6];
+        snprintf(port, 6, "%lld", YAJL_GET_INTEGER(ports->u.array.values[port_index]));
+        add_backend(srv, app, YAJL_GET_STRING(host), port);
+      }
+      Lck_Unlock(&app->mtx);
+
+      app->last_update = VTIM_real();
+    }
+
+  return 1;
+}
+
+/*
+* Update application with data from Marathon.
+*/
+static int
+marathon_update_application (struct vmod_marathon_server *srv,
+                             struct marathon_application *app)
+{
+  yajl_val node = NULL;
+
+  CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
+  CHECK_OBJ_NOTNULL(app, VMOD_MARATHON_APPLICATION_MAGIC);
+
+  MARATHON_LOG_INFO(NULL, "Updating application %s.", app->id);
+
+  if (!fetch_json_data(&node, app->marathon_app_endpoint)) {
+    return 0;
+  }
+
+  marathon_update_backends(srv, app, node);
+  marathon_update_application_labels(app, node);
+
   yajl_tree_free(node);
 
   return 1;
@@ -476,6 +597,7 @@ add_application(struct vmod_marathon_server *srv, const char *appid)
   ALLOC_OBJ(app, VMOD_MARATHON_APPLICATION_MAGIC);
   CHECK_OBJ_NOTNULL(app, VMOD_MARATHON_APPLICATION_MAGIC);
   VTAILQ_INIT(&app->belist);
+  VTAILQ_INIT(&app->labels);
 
   AN(memcpy(&app->backend_config, &srv->default_backend_config,
             sizeof(struct marathon_backend_config)));
@@ -486,19 +608,20 @@ add_application(struct vmod_marathon_server *srv, const char *appid)
   app->lck = Lck_CreateClass("marathon.application");
 
   INIT_OBJ(&app->dir, DIRECTOR_MAGIC);
-  app->dir.name = "marathon-backend";
+
+  app->dir.name     = "marathon-backend";
   app->dir.vcl_name = strdup(appid);
-  app->dir.resolve = marathon_resolve;
-  app->dir.healthy = marathon_healthy;
-  app->dir.priv = app;
+  app->dir.resolve  = marathon_resolve;
+  app->dir.healthy  = marathon_healthy;
+  app->dir.priv     = app;
 
   vsb = VSB_new_auto();
   AN(vsb);
 
-  VSB_printf(vsb, "%s%s/tasks", srv->marathon_app_endpoint, appid);
+  VSB_printf(vsb, "%s%s", srv->marathon_app_endpoint, appid);
   AZ(VSB_finish(vsb));
 
-  app->marathon_task_endpoint = strdup(VSB_data(vsb));
+  app->marathon_app_endpoint = strdup(VSB_data(vsb));
 
   VSB_delete(vsb);
 
@@ -521,10 +644,11 @@ delete_application(struct vmod_marathon_server *srv, struct marathon_application
   CHECK_OBJ_NOTNULL(app, VMOD_MARATHON_APPLICATION_MAGIC);
 
   free_be_list(srv, app);
+  free_label_list(app);
 
   Lck_Delete(&app->mtx);
   free(app->id);
-  free(app->marathon_task_endpoint);
+  free(app->marathon_app_endpoint);
   FREE_OBJ(app);
   AZ(app);
 }
@@ -534,33 +658,16 @@ delete_application(struct vmod_marathon_server *srv, struct marathon_application
 */
 static int
 get_application_list(struct vmod_marathon_server *srv) {
-  struct curl_recvbuf buf;
-  CURLcode res;
+  yajl_val node = NULL;
+  const char *apps_path[] = {"apps", (const char *) 0};
+  const char *id_path[]   = {"id",   (const char *) 0};
 
   CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
-
   MARATHON_LOG_INFO(NULL, "get_application_list endpoint: %s", srv->marathon_app_endpoint);
 
-  init_curl_buffer(&buf);
-  res = curl_fetch(&buf, srv->marathon_app_endpoint);
-
-  if (res != CURLE_OK) {
-    free_curl_buffer(&buf);
+  if (!fetch_json_data(&node, srv->marathon_app_endpoint)) {
     return 0;
   }
-
-  yajl_val node;
-  char errbuf[1024];
-  node = yajl_tree_parse((const char*)buf.data, errbuf, 1024);
-
-  if (node == NULL) {
-    free_curl_buffer(&buf);
-    return 0;
-  }
-
-  const char *apps_path[] = {"apps", (const char *) 0};
-  const char *id_path[]   = {"id", (const char *) 0};
-
 
   yajl_val apps = yajl_tree_get(node, apps_path, yajl_t_array);
 
@@ -578,7 +685,6 @@ get_application_list(struct vmod_marathon_server *srv) {
   }
 
   yajl_tree_free(node);
-  free_curl_buffer(&buf);
 
   return 1;
 }
@@ -866,11 +972,35 @@ vmod_server_set_backend_config(VRT_CTX, struct vmod_marathon_server *srv,
 }
 
 /*
-* VCL function .backend()
-* Returns current active backends for a given marathon application.
+* VCL function .backend_by_label()
+* Returns current active backends for a given marathon application identified by label.
+*/
+VCL_BACKEND
+vmod_server_backend_by_label(VRT_CTX, struct vmod_marathon_server *srv,
+                          VCL_STRING key, VCL_STRING val)
+{
+  struct marathon_application *app = NULL;
+
+    CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
+    CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
+
+    VSLb(ctx->vsl, SLT_Debug, "backend_by_label(%s, %s)", key, val);
+
+    app = marathon_get_app_by_label(srv, key, val);
+
+    if (app != NULL) {
+      return &app->dir;
+    }
+
+    return NULL;
+}
+
+/*
+* VCL function .backend_by_id()
+* Returns current active backends for a given marathon application identified by id.
 */
 VCL_BACKEND 
-vmod_server_backend(VRT_CTX, struct vmod_marathon_server *srv,
+vmod_server_backend_by_id(VRT_CTX, struct vmod_marathon_server *srv,
                     VCL_STRING id)
 {
   struct marathon_application *app = NULL;
@@ -878,7 +1008,7 @@ vmod_server_backend(VRT_CTX, struct vmod_marathon_server *srv,
   CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
   CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
 
-  VSLb(ctx->vsl, SLT_Debug, "Call to .backend(%s)", id);
+  VSLb(ctx->vsl, SLT_Debug, "backend_by_id(%s)", id);
 
   app = marathon_get_app(srv, id);
 

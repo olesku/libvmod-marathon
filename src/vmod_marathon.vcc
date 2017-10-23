@@ -11,4 +11,5 @@ $Method VOID    .set_backend_config(STRING id="", PROBE probe=0,
                                     DURATION connect_timeout=0, DURATION first_byte_timeout=0,
                                     DURATION between_bytes_timeout=0, INT max_connections=0)
 
-$Method BACKEND .backend(STRING id="")
+$Method BACKEND .backend_by_id(STRING id="")
+$Method BACKEND .backend_by_label(STRING key="", STRING val="")

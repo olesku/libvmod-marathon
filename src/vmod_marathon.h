@@ -68,19 +68,35 @@ struct marathon_backend {
 
 VTAILQ_HEAD(marathon_backend_head, marathon_backend);
 
+struct marathon_application_label {
+    #define VMOD_MARATHON_APPLICATION_LABEL_MAGIC 0x8506ab9f
+    unsigned int magic;
+    char *key;
+    char *val;
+    size_t key_len;
+    size_t val_len;
+    VTAILQ_ENTRY(marathon_application_label) next;
+};
+
+
+VTAILQ_HEAD(marathon_application_label_head, marathon_application_label);
+
 struct marathon_application {
   unsigned int magic;
   double last_update;
   #define VMOD_MARATHON_APPLICATION_MAGIC 0x8476ab3f
   char *id;
   size_t id_len;
-  char *marathon_task_endpoint;
+
+  char *marathon_app_endpoint;
 
   struct marathon_backend_config backend_config;
   struct marathon_backend *curbe;
   struct director dir;
   VRT_BACKEND_FIELDS();
   struct marathon_backend_head belist;
+  struct marathon_application_label_head labels;
+  
   struct VSC_lck *lck;
   struct lock mtx;
   VTAILQ_ENTRY(marathon_application) next;

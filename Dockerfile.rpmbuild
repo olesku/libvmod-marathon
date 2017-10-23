@@ -11,7 +11,7 @@ RUN yum install -y rpm-build jemalloc-devel libedit-devel ncurses-devel \
                    python-docutils python-sphinx gcc git automake autoconf libtool mock make \
                    libcurl-devel yajl-devel vim
 
-RUN curl -s https://packagecloud.io/install/repositories/varnishcache/varnish51/script.rpm.sh | bash
+RUN curl -s https://packagecloud.io/install/repositories/varnishcache/varnish52/script.rpm.sh | bash
 
 RUN yum -y install varnish varnish-devel varnish-libs varnish-libs-devel
 
