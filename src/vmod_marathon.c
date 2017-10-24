@@ -29,6 +29,9 @@
 
 struct vmod_marathon_head objects = VTAILQ_HEAD_INITIALIZER(objects);
 
+static struct VSC_lck *lck_queue, *lck_app;
+static unsigned loadcnt = 0;
+
 /*
 * Initialize curl_recvbuffer.
 */
@@ -604,7 +607,6 @@ add_application(struct vmod_marathon_server *srv, const char *appid)
   app->id = strdup(appid);
   app->id_len = strlen(app->id);
   app->curbe = NULL;
-  app->lck = Lck_CreateClass("marathon.application");
 
   INIT_OBJ(&app->dir, DIRECTOR_MAGIC);
 
@@ -624,8 +626,7 @@ add_application(struct vmod_marathon_server *srv, const char *appid)
 
   VSB_delete(vsb);
 
-  AN(app->lck);
-  Lck_New(&app->mtx, app->lck);
+  Lck_New(&app->mtx, lck_app);
 
   VTAILQ_INSERT_TAIL(&srv->app_list, app, next);
   marathon_schedule_update(srv, app);
@@ -646,6 +647,7 @@ delete_application(struct vmod_marathon_server *srv, struct marathon_application
   free_label_list(app);
 
   Lck_Delete(&app->mtx);
+
   free(app->id);
   free(app->marathon_app_endpoint);
   FREE_OBJ(app);
@@ -1066,10 +1068,25 @@ event_func(VRT_CTX, struct vmod_priv *vcl_priv, enum vcl_event_e e)
 
   switch(e) {
     case VCL_EVENT_LOAD:
+      if (loadcnt == 0) {
+        lck_queue = Lck_CreateClass("marathon.queue");
+        lck_app = Lck_CreateClass("marathon.application");
+        AN(lck_queue);
+        AN(lck_app);
+      }
+      loadcnt++;
+
       return 0;
     break;
 
     case VCL_EVENT_DISCARD:
+      assert(loadcnt > 0);
+      loadcnt--;
+      if (loadcnt == 0) {
+        Lck_DestroyClass(&lck_queue);
+        Lck_DestroyClass(&lck_app);
+      }
+
       return 0;
     break;
 
@@ -1144,10 +1161,7 @@ vmod_server__init(VRT_CTX, struct vmod_marathon_server **srvp,
 
   *srvp = srv;
 
-  srv->queue_lck = Lck_CreateClass("marathon.updatequeue");
-  AN(srv->queue_lck);
-
-  Lck_New(&srv->queue_mtx, srv->queue_lck);
+  Lck_New(&srv->queue_mtx, lck_queue);
 
   srv->default_backend_config.vcl_name              = srv->vcl_name;
   srv->default_backend_config.ipv4_addr             = NULL;

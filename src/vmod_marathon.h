@@ -97,7 +97,6 @@ struct marathon_application {
   struct marathon_backend_head belist;
   struct marathon_application_label_head labels;
   
-  struct VSC_lck *lck;
   struct lock mtx;
   VTAILQ_ENTRY(marathon_application) next;
 };
@@ -126,7 +125,7 @@ struct vmod_marathon_server {
   pthread_t                         update_th;
   pthread_cond_t                    update_cond;
   struct lock                       queue_mtx;
-  struct VSC_lck                  *queue_lck;
+
   VTAILQ_ENTRY(vmod_marathon_server) next;
   struct marathon_application_head app_list;
   struct marathon_update_queue update_queue;
