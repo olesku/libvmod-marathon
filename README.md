@@ -2,16 +2,15 @@
 
 ### Description
 ---
-This module dynamically fetches applications from [Marathon](https://mesosphere.github.io/marathon/) and makes them available as backends in your Varnish VCL.
+This module dynamically fetches applications from [Marathon](https://mesosphere.github.io/marathon/) and make them accessible as backends in your Varnish VCL.
 
-It listens on Marathon's SSE eventbus and will ensures the backends is always kept in a consistent state without requiring to reload Varnish.
+It monitors Marathon's SSE eventbus and will ensures the backends is always kept in a consistent state without requiring to reload Varnish.
 
 ### Usage
 ---
 ``` new my_marathon = marathon.server(endpoint = "http://marathon.domain.tld",[default appconfig options]) ```
 
 ###### Available options
-
 | Parameter             | Description                 | Default                |
 |-----------------------|-----------------------------|------------------------|
 | endpoint              | URL to Marathon             | Null (required)        |
@@ -21,10 +20,9 @@ It listens on Marathon's SSE eventbus and will ensures the backends is always ke
 | max_connections       | max_connections             | Varnish default        |
 
 ### Methods
-``` .set_backend_config(id="/myapp", options) ```
+***``` .set_backend_config(id="/myapp", options) ```***
 
 ###### Options
-
 | Parameter             | Description                 | Default                |
 |-----------------------|-----------------------------|------------------------|
 | port_index            | Port index to use           | 0                      |
@@ -38,10 +36,13 @@ It listens on Marathon's SSE eventbus and will ensures the backends is always ke
 Set varnish backend parameters for "/myapp".
 
 
+***``` .backend_by_id("/myapp") ```***
 
-``` .backend("/myapp") ```
+Returns a round-robin backend for the application /myapp in Marathon.
 
-Returns a round-robin backend for the application with id /myapp in Marathon.
+***``` .backend_by_label("loadbalancer.host", req.http.Host) ```***
+
+Returns a round-robin backend for application in Marathon with a loadbalancer.host label matching the incoming request host. If multiple application has the same label the first match will be returned.
 
 #### Example VCL
 ---
@@ -60,11 +61,14 @@ sub vcl_init {
 }
 
 sub vcl_recv {
-  set req.backend_hint = my_marathon.backend(req.http.x-mesos-id);
+  if (req.http.x-mesos-id) {
+    set req.backend_hint = my_marathon.backend(req.http.x-mesos-id);
+  } elsif (req.http.Host) {
+    set req.backend_hint = my_marathon.backend_by_label("loadbalancer.host", req.http.Host);
+  }
+
   return(pass);
 }
-
-......
 ```
 ---
 ### Installation
