@@ -243,7 +243,6 @@ marathon_get_app(struct vmod_marathon_server *srv, const char *id)
 }
 
 /*
-
 * Get marathon_application from label.
 * If multiple applications have the matching label the first match will be returned.
 * Returns NULL if not found.
