@@ -62,7 +62,7 @@ sub vcl_init {
 
 sub vcl_recv {
   if (req.http.x-mesos-id) {
-    set req.backend_hint = my_marathon.backend(req.http.x-mesos-id);
+    set req.backend_hint = my_marathon.backend_by_id(req.http.x-mesos-id);
   } elsif (req.http.Host) {
     set req.backend_hint = my_marathon.backend_by_label("loadbalancer.host", req.http.Host);
   }
