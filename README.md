@@ -36,13 +36,11 @@ It monitors Marathon's SSE eventbus and ensures that the backends is always kept
 Set varnish backend parameters for "/myapp".
 
 
-***``` .backend_by_id("/myapp") ```***
+***``` .backend_by_id(<id>) ```***
+Returns a round-robin backend for the application with the given id in Marathon.
 
-Returns a round-robin backend for the application /myapp in Marathon.
-
-***``` .backend_by_label("loadbalancer.host", req.http.Host) ```***
-
-Returns a round-robin backend for application in Marathon with a loadbalancer.host label matching the incoming request host. If multiple application has the same label the first match will be returned.
+***``` .backend_by_label(<labelName>, <labelValue>) ```***
+Returns a round-robin backend for the application with the label <labelName> matching <labelValue> in Marathon.
 
 #### Example VCL
 ---
@@ -61,9 +59,13 @@ sub vcl_init {
 }
 
 sub vcl_recv {
-  if (req.http.x-mesos-id) {
-    set req.backend_hint = my_marathon.backend_by_id(req.http.x-mesos-id);
-  } elsif (req.http.Host) {
+  // Route traffic to myapp.mysite.tld to application with Marathon ID /myapp.
+  if (req.http.Host == "myapp.mysite.tld") {
+    set req.backend_hint = my_marathon.backend_by_id("/myapp");
+  }
+
+  // Route all other traffic to application in Marathon with label loadbalancer.host matching req.http.Host
+  elsif (req.http.Host) {
     set req.backend_hint = my_marathon.backend_by_label("loadbalancer.host", req.http.Host);
   }
 
