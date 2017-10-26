@@ -429,7 +429,7 @@ static int fetch_json_data(yajl_val *node, const char *endpoint) {
 */
 static int
 marathon_update_application_labels(struct marathon_application *app, yajl_val json_node) {
-  const char *labels_path[] = { "app", "labels", (const char *) 0 };
+  static const char *labels_path[] = { "app", "labels", (const char *) 0 };
 
   yajl_val labels = yajl_tree_get(json_node, labels_path, yajl_t_object);
 
@@ -466,10 +466,10 @@ marathon_update_application_labels(struct marathon_application *app, yajl_val js
 static int marathon_update_backends(struct vmod_marathon_server *srv, struct marathon_application *app,
                                     yajl_val json_node)
 {
-  const char *task_path[]  = {"app", "tasks", (const char *) 0};
-  const char *host_path[]  = {"host",  (const char *) 0};
-  const char *ports_path[] = {"ports", (const char *) 0};
-  const char *state_path[] = {"state", (const char *) 0};
+  static const char *task_path[]  = {"app", "tasks", (const char *) 0};
+  static const char *host_path[]  = {"host",  (const char *) 0};
+  static const char *ports_path[] = {"ports", (const char *) 0};
+  static const char *state_path[] = {"state", (const char *) 0};
 
   yajl_val tasks = yajl_tree_get(json_node, task_path, yajl_t_array);
 
@@ -660,8 +660,8 @@ delete_application(struct vmod_marathon_server *srv, struct marathon_application
 static int
 get_application_list(struct vmod_marathon_server *srv) {
   yajl_val node = NULL;
-  const char *apps_path[] = {"apps", (const char *) 0};
-  const char *id_path[]   = {"id",   (const char *) 0};
+  static const char *apps_path[] = {"apps", (const char *) 0};
+  static const char *id_path[]   = {"id",   (const char *) 0};
 
   CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
   MARATHON_LOG_INFO(NULL, "get_application_list endpoint: %s", srv->marathon_app_endpoint);
@@ -817,7 +817,7 @@ curl_sse_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
       node = yajl_tree_parse((const char*)event_data, errbuf, 1024);
       
       if (node != NULL) {
-        const char *appid_path[] = {"appId", (const char *) 0};
+        static const char *appid_path[] = {"appId", (const char *) 0};
         yajl_val app_id = yajl_tree_get(node, appid_path, yajl_t_string);
 
         if (YAJL_IS_STRING(app_id)) {
