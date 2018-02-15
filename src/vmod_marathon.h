@@ -96,6 +96,7 @@ struct marathon_application {
   VRT_BACKEND_FIELDS();
   struct marathon_backend_head belist;
   struct marathon_application_label_head labels;
+  unsigned int has_healthchecks;
   
   struct lock mtx;
   VTAILQ_ENTRY(marathon_application) next;

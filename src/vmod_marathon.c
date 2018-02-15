@@ -460,6 +460,47 @@ marathon_update_application_labels(struct marathon_application *app, yajl_val js
   return 1;
 }
 
+static
+int marathon_verify_task_healthy(struct marathon_application *app, yajl_val task) {
+  static const char *state_path[] = {"state", (const char *) 0};
+  static const char *id_path[]    = {"id", (const char *) 0};
+  yajl_val state          = yajl_tree_get(task, state_path, yajl_t_string);
+  yajl_val task_id        = yajl_tree_get(task, id_path, yajl_t_string);
+  const char *state_str   = YAJL_GET_STRING(state);
+  const char *task_id_str = YAJL_GET_STRING(task_id);
+
+  // Only consider tasks that is in TASK_RUNNING state.
+  if (strncmp(state_str, "TASK_RUNNING", 12) != 0)
+    return 0;
+
+  /*
+  * If we have healthchecks enabled on the app then also take them into consideration.
+  */
+  if (app->has_healthchecks) {
+    static const char *healthcheck_results_path[]  = {"healthCheckResults", (const char *) 0};
+    static const char *alive_path[]  = {"alive", (const char *) 0};
+
+    yajl_val healthcheck_results = yajl_tree_get(task, healthcheck_results_path, yajl_t_array);
+
+    if (healthcheck_results && YAJL_IS_ARRAY(healthcheck_results)) {
+      for (unsigned int i = 0; i < healthcheck_results->u.array.len; i++) {
+        yajl_val healthcheck_result = healthcheck_results->u.array.values[i];
+        yajl_val alive = yajl_tree_get(healthcheck_result, alive_path, yajl_t_false);
+
+        if (YAJL_IS_FALSE(alive)) {
+          MARATHON_LOG_INFO(NULL, "Unhealthy task for %s: %s. Not adding.", app->id, task_id_str);
+          return 0;
+        }
+      }
+    }
+  }
+
+  MARATHON_LOG_INFO(NULL, "Adding healthy task for %s: %s", app->id, task_id_str);
+
+  return 1;
+}
+
+
 /*
 * Fetch backends from Marathon.
 */
@@ -469,7 +510,6 @@ static int marathon_update_backends(struct vmod_marathon_server *srv, struct mar
   static const char *task_path[]  = {"app", "tasks", (const char *) 0};
   static const char *host_path[]  = {"host",  (const char *) 0};
   static const char *ports_path[] = {"ports", (const char *) 0};
-  static const char *state_path[] = {"state", (const char *) 0};
 
   yajl_val tasks = yajl_tree_get(json_node, task_path, yajl_t_array);
 
@@ -481,21 +521,16 @@ static int marathon_update_backends(struct vmod_marathon_server *srv, struct mar
         yajl_val task = tasks->u.array.values[i];
         yajl_val host = yajl_tree_get(task, host_path, yajl_t_string);
         yajl_val ports = yajl_tree_get(task, ports_path, yajl_t_array);
-        yajl_val state = yajl_tree_get(task, state_path, yajl_t_string);
 
         if (!YAJL_IS_STRING(host) || !YAJL_IS_ARRAY(ports) || ports->u.array.len == 0 ||
             !YAJL_IS_INTEGER(ports->u.array.values[0])) {
           continue;
         }
 
-        if (!YAJL_IS_STRING(state))
+        // Only add healthy tasks.
+        if (!marathon_verify_task_healthy(app, task)) {
           continue;
-
-        const char *state_str = YAJL_GET_STRING(state);
-
-        // Only add tasks that is in TASK_RUNNING state.
-        if (strncmp(state_str, "TASK_RUNNING", 12) != 0)
-          continue;
+        }
 
         unsigned int port_index = 0;
         if (ports->u.array.len > app->backend_config.port_index)
@@ -531,6 +566,16 @@ marathon_update_application (struct vmod_marathon_server *srv,
 
   if (!fetch_json_data(&node, app->marathon_app_endpoint)) {
     return 0;
+  }
+
+  /* Check if application has healthcheck. */
+  static const char *healthchecks_path[]  = {"app", "healthChecks", (const char *) 0};
+  yajl_val healthchecks = yajl_tree_get(node, healthchecks_path, yajl_t_array);
+
+  if (healthchecks && YAJL_IS_ARRAY(healthchecks)) {
+    if (healthchecks->u.array.len > 0) {
+      app->has_healthchecks = 1;
+    }
   }
 
   marathon_update_backends(srv, app, node);
@@ -607,6 +652,7 @@ add_application(struct vmod_marathon_server *srv, const char *appid)
   app->id = strdup(appid);
   app->id_len = strlen(app->id);
   app->curbe = NULL;
+  app->has_healthchecks = 0;
 
   INIT_OBJ(&app->dir, DIRECTOR_MAGIC);
 
@@ -727,6 +773,43 @@ marathon_update_thread_func(void *ptr) {
 }
 
 /*
+* SSE event handler function.
+*/
+static void
+handle_sse_event(struct vmod_marathon_server *srv, const char *event_type, const char *event_data) {
+  char errbuf[2048];
+  yajl_val json_node = NULL;
+
+  json_node = yajl_tree_parse((const char*)event_data, errbuf, 2048);
+
+  if (json_node == NULL) {
+    return;
+  }
+
+  if (strncmp(event_type, "status_update_event", 22) == 0) {
+    static const char *appid_path[] = {"appId", (const char *) 0};
+    yajl_val app_id = yajl_tree_get(json_node, appid_path, yajl_t_string);
+
+    if (YAJL_IS_STRING(app_id)) {
+      struct marathon_application *app = marathon_get_app(srv, YAJL_GET_STRING(app_id));
+      if (app != NULL) {
+        MARATHON_LOG_INFO(NULL, "Status change on %s.", YAJL_GET_STRING(app_id));
+        marathon_schedule_update(srv, app);
+        marathon_perform_update(srv);
+      } else {
+        MARATHON_LOG_INFO(NULL, "New application %s detected, adding to applist.", YAJL_GET_STRING(app_id));
+        add_application(srv, YAJL_GET_STRING(app_id));
+        marathon_perform_update(srv);
+      }
+    }
+  }
+
+  // TODO: Handle delete and health_status_changed_event event.
+
+  yajl_tree_free(json_node);
+}
+
+/*
 * Curl write callback for sse_event_thread_func.
 */
 static size_t 
@@ -809,32 +892,9 @@ curl_sse_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
     }
   }
 
-  /* Handle SSE event. */
+  // Handle the event.
   if (event_type[0] != '\0' && event_data[0] != '\0') {
-      if (strncmp(event_type, "status_update_event", 22) == 0) {
-      yajl_val node;
-      char errbuf[1024];
-      node = yajl_tree_parse((const char*)event_data, errbuf, 1024);
-      
-      if (node != NULL) {
-        static const char *appid_path[] = {"appId", (const char *) 0};
-        yajl_val app_id = yajl_tree_get(node, appid_path, yajl_t_string);
-
-        if (YAJL_IS_STRING(app_id)) {
-          struct marathon_application *app = marathon_get_app(srv, YAJL_GET_STRING(app_id));
-          if (app != NULL) {
-            MARATHON_LOG_INFO(NULL, "Status change on %s.", YAJL_GET_STRING(app_id));
-            marathon_schedule_update(srv, app);
-            marathon_perform_update(srv);
-          } else {
-            MARATHON_LOG_INFO(NULL, "New application %s detected, adding to applist.", YAJL_GET_STRING(app_id));
-            add_application(srv, YAJL_GET_STRING(app_id));
-            marathon_perform_update(srv);
-          }
-        }
-      }
-      yajl_tree_free(node);
-    } // TODO: Handle delete and health_status_changed_event event.
+    handle_sse_event(srv, event_type, event_data);
   }
 
   /* If we have some data remaining in buffer after end of current event
