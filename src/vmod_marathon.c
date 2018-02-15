@@ -1238,7 +1238,6 @@ vmod_server__init(VRT_CTX, struct vmod_marathon_server **srvp,
   srv->default_backend_config.first_byte_timeout    = first_byte_timeout;
   srv->default_backend_config.between_bytes_timeout = between_bytes_timeout;
   srv->default_backend_config.max_connections       = max_connections;
-  //srv->default_backend_config.proxy_header          = 0;
   srv->default_backend_config.probe                 = NULL;
   srv->default_backend_config.port_index            = 0;
   
