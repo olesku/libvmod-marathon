@@ -29,7 +29,7 @@
 
 struct vmod_marathon_head objects = VTAILQ_HEAD_INITIALIZER(objects);
 
-static struct VSC_lck *lck_queue, *lck_app;
+static struct VSC_C_lck *lck_queue, *lck_app;
 static unsigned loadcnt = 0;
 
 /*
@@ -1067,6 +1067,9 @@ event_func(VRT_CTX, struct vmod_priv *vcl_priv, enum vcl_event_e e)
   CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
 
   switch(e) {
+	  case VCL_EVENT_USE:
+		  return (0);
+
     case VCL_EVENT_LOAD:
       if (loadcnt == 0) {
         lck_queue = Lck_CreateClass("marathon.queue");
@@ -1083,8 +1086,8 @@ event_func(VRT_CTX, struct vmod_priv *vcl_priv, enum vcl_event_e e)
       assert(loadcnt > 0);
       loadcnt--;
       if (loadcnt == 0) {
-        Lck_DestroyClass(&lck_queue);
-        Lck_DestroyClass(&lck_app);
+        VSM_Free(lck_queue);
+        VSM_Free(lck_app);
       }
 
       return 0;
@@ -1097,6 +1100,9 @@ event_func(VRT_CTX, struct vmod_priv *vcl_priv, enum vcl_event_e e)
     case VCL_EVENT_COLD:
       active = 0;
     break;
+
+    default:
+      WRONG("Unhandled VMOD event.");
   }
 
   VTAILQ_FOREACH(obj, &objects, next) {
@@ -1172,7 +1178,7 @@ vmod_server__init(VRT_CTX, struct vmod_marathon_server **srvp,
   srv->default_backend_config.first_byte_timeout    = first_byte_timeout;
   srv->default_backend_config.between_bytes_timeout = between_bytes_timeout;
   srv->default_backend_config.max_connections       = max_connections;
-  srv->default_backend_config.proxy_header          = 0;
+  //srv->default_backend_config.proxy_header          = 0;
   srv->default_backend_config.probe                 = NULL;
   srv->default_backend_config.port_index            = 0;
   
