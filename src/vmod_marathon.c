@@ -12,6 +12,7 @@
 
 #include <curl/curl.h>
 #include <yajl/yajl_tree.h>
+#include <yajl/yajl_gen.h>
 
 #include "config.h"
 #include "vcl.h"
@@ -159,33 +160,46 @@ get_addrname(char *addr, struct suckaddr *sa)
 }
 
 /*
+* Free a backend.
+*/
+static void free_be(struct vmod_marathon_server *srv, struct marathon_backend *be) {
+  struct vrt_ctx ctx;
+
+  CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
+  CHECK_OBJ_NOTNULL(be, VMOD_MARATHON_BACKEND_MAGIC);
+
+  INIT_OBJ(&ctx, VRT_CTX_MAGIC);
+  ctx.vcl = srv->vcl;
+  ctx.vsl = NULL;
+
+  free(be->vcl_name);
+  free(be->task_id);
+  free(be->ipv4_addr);
+  free(be->ipv6_addr);
+  free(be->port);
+
+  VRT_delete_backend(&ctx, &be->dir);
+}
+
+/*
 * Free all backends assigned to a mararhon_application.
 */
 static void 
 free_be_list(struct vmod_marathon_server *srv, struct marathon_application *app)
 {
   struct marathon_backend *mbe = NULL, *mben = NULL;
-  struct vrt_ctx ctx;
 
   CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
   CHECK_OBJ_NOTNULL(app, VMOD_MARATHON_APPLICATION_MAGIC);
 
-  INIT_OBJ(&ctx, VRT_CTX_MAGIC);
-  ctx.vcl = srv->vcl;
-  ctx.vsl = NULL;
-
   Lck_Lock(&app->mtx);
 
   VTAILQ_FOREACH_SAFE(mbe, &app->belist, next, mben) {
-  free(mbe->vcl_name);
-  free(mbe->ipv4_addr);
-  free(mbe->ipv6_addr);
-  free(mbe->port);
-  VRT_delete_backend(&ctx, &mbe->dir);
-  VTAILQ_REMOVE(&app->belist, mbe, next);
-  FREE_OBJ(mbe);
-  AZ(mbe);
-}
+    free_be(srv, mbe);
+    VTAILQ_REMOVE(&app->belist, mbe, next);
+    FREE_OBJ(mbe);
+    AZ(mbe);
+  }
 
   VTAILQ_INIT(&app->belist);
 
@@ -297,7 +311,6 @@ marathon_resolve(const struct director *dir, struct worker *wrk,
 
   Lck_Lock(&app->mtx);
   if (VTAILQ_EMPTY(&app->belist)) {
-    MARATHON_LOG_INFO(NULL, "APP %s: belist is empty", app->id);
     Lck_Unlock(&app->mtx);
     return NULL;
   }
@@ -327,9 +340,9 @@ marathon_healthy(const struct director *dir, const struct busyobj *bo,
 /*
 * Add backend to marathon_application.
 */
-static void 
+struct marathon_backend *
 add_backend(struct vmod_marathon_server *srv, struct marathon_application *app,
-            const char *host, const char *port)
+            const char *host, const char *port, const char *task_id)
 {
   struct vrt_backend be;
   struct marathon_backend *mbe = NULL;
@@ -358,6 +371,7 @@ add_backend(struct vmod_marathon_server *srv, struct marathon_application *app,
   ALLOC_OBJ(mbe, VMOD_MARATHON_BACKEND_MAGIC);
   AN(mbe);
 
+  mbe->task_id   = strdup(task_id);
   mbe->ipv4_addr = strdup(ipv4_addr);
   mbe->ipv6_addr = strdup(ipv6_addr);
   mbe->port = strdup(port);
@@ -368,7 +382,7 @@ add_backend(struct vmod_marathon_server *srv, struct marathon_application *app,
   vsb = VSB_new_auto();
   AN(vsb);
 
-  VSB_printf(vsb, "%s-%s:%s", app->id, host, port);
+  VSB_printf(vsb, "%s", task_id);
   AZ(VSB_finish(vsb));
 
   mbe->vcl_name = strdup(VSB_data(vsb));
@@ -396,6 +410,29 @@ add_backend(struct vmod_marathon_server *srv, struct marathon_application *app,
 
   mbe->time_added = VTIM_real();
   VTAILQ_INSERT_TAIL(&app->belist, mbe, next);
+
+  return mbe;
+}
+
+
+/*
+* Delete application from srv->app_list.
+*/
+static void
+delete_application(struct vmod_marathon_server *srv, struct marathon_application *app)
+{
+  CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
+  CHECK_OBJ_NOTNULL(app, VMOD_MARATHON_APPLICATION_MAGIC);
+
+  free_be_list(srv, app);
+  free_label_list(app);
+
+  Lck_Delete(&app->mtx);
+
+  free(app->id);
+  free(app->marathon_app_endpoint);
+  FREE_OBJ(app);
+  AZ(app);
 }
 
 /*
@@ -461,16 +498,13 @@ marathon_update_application_labels(struct marathon_application *app, yajl_val js
 }
 
 static
-int marathon_verify_task_healthy(struct marathon_application *app, yajl_val task) {
+int marathon_get_task_health(struct marathon_application *app, yajl_val task) {
   static const char *state_path[] = {"state", (const char *) 0};
-  static const char *id_path[]    = {"id", (const char *) 0};
-  yajl_val state          = yajl_tree_get(task, state_path, yajl_t_string);
-  yajl_val task_id        = yajl_tree_get(task, id_path, yajl_t_string);
-  const char *state_str   = YAJL_GET_STRING(state);
-  const char *task_id_str = YAJL_GET_STRING(task_id);
+  yajl_val state                  = yajl_tree_get(task, state_path, yajl_t_string);
+  const char *state_str           = YAJL_GET_STRING(state);
 
-  // Only consider tasks that is in TASK_RUNNING state.
-  if (strncmp(state_str, "TASK_RUNNING", 12) != 0)
+  // Only consider apps that has healthchecks and tasks that is in TASK_RUNNING state.
+  if (strncmp(state_str, "TASK_RUNNING", 12) != 0 || !app->has_healthchecks)
     return 0;
 
   /*
@@ -485,21 +519,135 @@ int marathon_verify_task_healthy(struct marathon_application *app, yajl_val task
     if (healthcheck_results && YAJL_IS_ARRAY(healthcheck_results)) {
       for (unsigned int i = 0; i < healthcheck_results->u.array.len; i++) {
         yajl_val healthcheck_result = healthcheck_results->u.array.values[i];
-        yajl_val alive = yajl_tree_get(healthcheck_result, alive_path, yajl_t_false);
+        yajl_val alive = yajl_tree_get(healthcheck_result, alive_path, yajl_t_any);
 
-        if (YAJL_IS_FALSE(alive)) {
-          MARATHON_LOG_INFO(NULL, "Unhealthy task for %s: %s. Not adding.", app->id, task_id_str);
+        if (!YAJL_IS_TRUE(alive)) {
           return 0;
         }
       }
+    } else {
+      // Return false if there is no healthcheck results yet.
+      return 0;
     }
   }
-
-  MARATHON_LOG_INFO(NULL, "Adding healthy task for %s: %s", app->id, task_id_str);
 
   return 1;
 }
 
+struct marathon_backend *marathon_app_get_task_id(struct marathon_application *app, const char *task_id)
+{
+  unsigned int task_id_len = strlen(task_id);
+
+  struct marathon_backend *be_elm = NULL;
+  VTAILQ_FOREACH(be_elm, &app->belist, next) {
+    if (memcmp(be_elm->task_id, task_id, task_id_len) == 0) {
+      return be_elm;
+    }
+  }
+
+  return NULL;
+}
+
+static unsigned int marathon_tasklist_has_id(yajl_val tasks, const char *id) {
+  unsigned int id_len           = strlen(id);
+  static const char *id_path[]  = {"id", (const char *) 0};
+
+  for (unsigned int i = 0; i < tasks->u.array.len; i++) {
+    yajl_val task  = tasks->u.array.values[i];
+    yajl_val tid    = yajl_tree_get(task, id_path, yajl_t_string);
+
+    if (tid && YAJL_IS_STRING(tid)) {
+      const char *id_str = YAJL_GET_STRING(tid);
+      if (memcmp(id_str, id, id_len) == 0) {
+        return 1;
+      }
+    }
+  }
+
+  return 0;
+}
+
+unsigned int marathon_app_delete_task(struct vmod_marathon_server *srv, struct marathon_application *app, const char* id) {
+  struct marathon_backend *be = NULL, *be_n = NULL;
+
+  // TODO: We should store task_id_len in the marathon_backend struct.
+  unsigned int id_len = strlen(id);
+
+  VTAILQ_FOREACH_SAFE(be, &app->belist, next, be_n) {
+    if (memcmp(be->task_id, id, id_len) == 0) {
+      VTAILQ_REMOVE(&app->belist, be, next);
+      free_be(srv, be);
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
+static void update_backend_list_delta(struct vmod_marathon_server *srv, yajl_val tasks, struct marathon_application *app)
+{
+  static const char *host_path[]  = {"host",  (const char *) 0};
+  static const char *ports_path[] = {"ports", (const char *) 0};
+  static const char *id_path[]    = {"id", (const char *) 0};
+
+  for (unsigned int i = 0; i < tasks->u.array.len; i++) {
+    yajl_val task  = tasks->u.array.values[i];
+    yajl_val id    = yajl_tree_get(task, id_path, yajl_t_string);
+    yajl_val host  = yajl_tree_get(task, host_path, yajl_t_string);
+    yajl_val ports = yajl_tree_get(task, ports_path, yajl_t_array);
+
+    const char *host_str = YAJL_GET_STRING(host);
+    const char *id_str = YAJL_GET_STRING(id);
+
+    if (!YAJL_IS_STRING(host) || !YAJL_IS_ARRAY(ports) || ports->u.array.len == 0 ||
+        !YAJL_IS_INTEGER(ports->u.array.values[0])) {
+      continue;
+    }
+
+    unsigned int port_index = 0;
+
+    if (ports->u.array.len > app->backend_config.port_index)
+      port_index = app->backend_config.port_index;
+    else
+      port_index = 0;
+
+    char port[6];
+    snprintf(port, 6, "%lld", YAJL_GET_INTEGER(ports->u.array.values[port_index]));
+
+    unsigned int alive = marathon_get_task_health(app, task);
+    struct marathon_backend *task_be = marathon_app_get_task_id(app, id_str);
+
+    // Remove task if it's unhealthy and already exist in our application belist.
+    if (task_be != NULL) {
+      if (app->has_healthchecks && !alive) {
+        marathon_app_delete_task(srv, app, task_be->task_id);
+        MARATHON_LOG_DEBUG(NULL, "DELETING UNHEALTHY TASK %s from %s", id_str, app->id);
+        continue;
+      }
+    }
+
+    // Do not add unhealthy tasks to application belist if healthchecks is enabled.
+    if (app->has_healthchecks && !alive) {
+      continue;
+    }
+
+    // Application is healthy or healthchecks is not enabled.
+    // Add task to belist.
+    if (task_be == NULL) {
+      MARATHON_LOG_DEBUG(NULL, "ADDING NEW BACKEND TO %s: %s", app->id, id_str);
+      task_be = add_backend(srv, app, host_str, port, id_str);
+    }
+  }
+
+  // Clean up tasks that no longer exists.
+  struct marathon_backend *be = NULL, *be_n = NULL;
+  VTAILQ_FOREACH_SAFE(be, &app->belist, next, be_n) {
+    if (!marathon_tasklist_has_id(tasks, be->task_id)) {
+      MARATHON_LOG_DEBUG(NULL, "DELETING BACKEND FROM %s: %s", app->id, be->task_id);
+      marathon_app_delete_task(srv, app, be->task_id);
+    }
+  }
+}
 
 /*
 * Fetch backends from Marathon.
@@ -508,42 +656,13 @@ static int marathon_update_backends(struct vmod_marathon_server *srv, struct mar
                                     yajl_val json_node)
 {
   static const char *task_path[]  = {"app", "tasks", (const char *) 0};
-  static const char *host_path[]  = {"host",  (const char *) 0};
-  static const char *ports_path[] = {"ports", (const char *) 0};
 
   yajl_val tasks = yajl_tree_get(json_node, task_path, yajl_t_array);
 
     if (tasks && YAJL_IS_ARRAY(tasks)) {
-      free_be_list(srv, app);
-
       Lck_Lock(&app->mtx);
-      for (unsigned int i = 0; i < tasks->u.array.len; i++) {
-        yajl_val task = tasks->u.array.values[i];
-        yajl_val host = yajl_tree_get(task, host_path, yajl_t_string);
-        yajl_val ports = yajl_tree_get(task, ports_path, yajl_t_array);
-
-        if (!YAJL_IS_STRING(host) || !YAJL_IS_ARRAY(ports) || ports->u.array.len == 0 ||
-            !YAJL_IS_INTEGER(ports->u.array.values[0])) {
-          continue;
-        }
-
-        // Only add healthy tasks.
-        if (!marathon_verify_task_healthy(app, task)) {
-          continue;
-        }
-
-        unsigned int port_index = 0;
-        if (ports->u.array.len > app->backend_config.port_index)
-          port_index = app->backend_config.port_index;
-        else
-          port_index = 0;
-
-        char port[6];
-        snprintf(port, 6, "%lld", YAJL_GET_INTEGER(ports->u.array.values[port_index]));
-        add_backend(srv, app, YAJL_GET_STRING(host), port);
-      }
+      update_backend_list_delta(srv,tasks, app);
       Lck_Unlock(&app->mtx);
-
       app->last_update = VTIM_real();
     }
 
@@ -562,7 +681,7 @@ marathon_update_application (struct vmod_marathon_server *srv,
   CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
   CHECK_OBJ_NOTNULL(app, VMOD_MARATHON_APPLICATION_MAGIC);
 
-  MARATHON_LOG_INFO(NULL, "Updating application %s.", app->id);
+  MARATHON_LOG_DEBUG(NULL, "Updating application %s.", app->id);
 
   if (!fetch_json_data(&node, app->marathon_app_endpoint)) {
     return 0;
@@ -681,26 +800,6 @@ add_application(struct vmod_marathon_server *srv, const char *appid)
 }
 
 /*
-* Delete application from srv->app_list.
-*/
-static void
-delete_application(struct vmod_marathon_server *srv, struct marathon_application *app)
-{
-  CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
-  CHECK_OBJ_NOTNULL(app, VMOD_MARATHON_APPLICATION_MAGIC);
-
-  free_be_list(srv, app);
-  free_label_list(app);
-
-  Lck_Delete(&app->mtx);
-
-  free(app->id);
-  free(app->marathon_app_endpoint);
-  FREE_OBJ(app);
-  AZ(app);
-}
-
-/*
 * Fetch application list from Marathon and import it to srv->app_list.
 */
 static int
@@ -710,7 +809,7 @@ get_application_list(struct vmod_marathon_server *srv) {
   static const char *id_path[]   = {"id",   (const char *) 0};
 
   CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
-  MARATHON_LOG_INFO(NULL, "get_application_list endpoint: %s", srv->marathon_app_endpoint);
+  MARATHON_LOG_DEBUG(NULL, "get_application_list endpoint: %s", srv->marathon_app_endpoint);
 
   if (!fetch_json_data(&node, srv->marathon_app_endpoint)) {
     return 0;
@@ -786,18 +885,18 @@ handle_sse_event(struct vmod_marathon_server *srv, const char *event_type, const
     return;
   }
 
-  if (strncmp(event_type, "status_update_event", 22) == 0) {
+  if (strncmp(event_type, "status_update_event", 22) == 0 || strncmp(event_type, "health_status_changed_event", 27) == 0) {
     static const char *appid_path[] = {"appId", (const char *) 0};
     yajl_val app_id = yajl_tree_get(json_node, appid_path, yajl_t_string);
 
     if (YAJL_IS_STRING(app_id)) {
       struct marathon_application *app = marathon_get_app(srv, YAJL_GET_STRING(app_id));
       if (app != NULL) {
-        MARATHON_LOG_INFO(NULL, "Status change on %s.", YAJL_GET_STRING(app_id));
+        MARATHON_LOG_DEBUG(NULL, "%s on %s.", event_type, YAJL_GET_STRING(app_id));
         marathon_schedule_update(srv, app);
         marathon_perform_update(srv);
       } else {
-        MARATHON_LOG_INFO(NULL, "New application %s detected, adding to applist.", YAJL_GET_STRING(app_id));
+        MARATHON_LOG_DEBUG(NULL, "New application %s detected, adding to applist.", YAJL_GET_STRING(app_id));
         add_application(srv, YAJL_GET_STRING(app_id));
         marathon_perform_update(srv);
       }
@@ -1078,6 +1177,79 @@ vmod_server_backend_by_id(VRT_CTX, struct vmod_marathon_server *srv,
   } 
 
   return NULL;
+}
+
+/*
+* VCL function .json_stats()
+* Returns a statistics page with backend statuses.
+*/
+VCL_STRING
+vmod_server_json_stats(VRT_CTX, struct vmod_marathon_server *srv)
+{
+  yajl_gen gen;
+  const unsigned char *buf;
+  size_t len;
+  struct marathon_application *app = NULL;
+  struct marathon_backend *be = NULL;
+
+  gen = yajl_gen_alloc(NULL);
+
+  if (gen == NULL) {
+    return "{}";
+  }
+
+  yajl_gen_map_open(gen);
+
+  yajl_gen_string(gen, (const unsigned char *)"backends", 8);
+  yajl_gen_array_open(gen);
+
+  VTAILQ_FOREACH(app, &srv->app_list, next) {
+    yajl_gen_map_open(gen);
+
+    Lck_Lock(&app->mtx);
+
+    yajl_gen_string(gen, (const unsigned char *)"id", 2);
+    yajl_gen_string(gen, (const unsigned char *)app->id, app->id_len);
+
+    yajl_gen_string(gen, (const unsigned char *)"last_update", 11);
+    yajl_gen_integer(gen, app->last_update);
+
+    yajl_gen_string(gen, (const unsigned char *)"has_healthchecks", 16);
+    yajl_gen_bool(gen, app->has_healthchecks);
+
+    yajl_gen_string(gen, (const unsigned char *)"tasks", 5);
+    yajl_gen_array_open(gen);
+
+    VTAILQ_FOREACH(be, &app->belist, next) {
+      yajl_gen_map_open(gen);
+      yajl_gen_string(gen, (const unsigned char *)"id", 2);
+      yajl_gen_string(gen, (const unsigned char *)be->task_id, strlen(be->task_id));
+      yajl_gen_string(gen, (const unsigned char *)"host", 4);
+      yajl_gen_string(gen, (const unsigned char *)be->ipv4_addr, strlen(be->ipv4_addr));
+      yajl_gen_string(gen, (const unsigned char *)"port", 4);
+      yajl_gen_string(gen, (const unsigned char *)be->port, strlen(be->port));
+      yajl_gen_string(gen, (const unsigned char *)"time_added", 10);
+      yajl_gen_integer(gen, be->time_added);
+      yajl_gen_map_close(gen);
+    }
+
+    Lck_Unlock(&app->mtx);
+
+    yajl_gen_array_close(gen);
+    yajl_gen_map_close(gen);
+  }
+
+
+  yajl_gen_array_close(gen);
+  yajl_gen_map_close(gen);
+  yajl_gen_get_buf(gen, &buf, &len);
+
+  VSB_printf(ctx->specific, "%s", buf);
+
+  yajl_gen_clear(gen);
+  yajl_gen_free(gen);
+
+  return "";
 }
 
 /*

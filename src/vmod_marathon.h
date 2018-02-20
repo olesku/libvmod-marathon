@@ -1,9 +1,11 @@
-#define MARATHON_SSE_PATH "/v2/events?event_type=status_update_event"
+#define MARATHON_SSE_PATH "/v2/events?event_type=status_update_event&event_type=health_status_changed_event"
 #define MARATHON_APP_PATH "/v2/apps"
 #define SSE_EVENT_SIZE_MAX 64
 #define SSE_DATA_SIZE_MAX 4096
 #define CURL_BUF_SIZE_MAX 8388608 // 8MiB.
 #define SSE_PING_TIMEOUT  30
+
+#define MARATHON_DEBUG
 
 #define IPBUFSIZ (VTCP_ADDRBUFSIZE + VTCP_PORTBUFSIZE + 2)
 
@@ -46,6 +48,13 @@
 #define MARATHON_LOG_INFO(ctx, message, ...) \
     MARATHON_LOG(ctx, LOG_INFO, message, ##__VA_ARGS__)
 
+#ifdef MARATHON_DEBUG
+  #define MARATHON_LOG_DEBUG(ctx, message, ...) \
+    MARATHON_LOG(ctx, LOG_INFO, message, ##__VA_ARGS__)
+  #else
+    #define MARATHON_LOG_DEBUG(ctx, message, ...)
+#endif
+
 struct marathon_backend_config {
   VRT_BACKEND_FIELDS();
   const struct vrt_backend_probe	*probe;
@@ -59,6 +68,7 @@ struct marathon_backend {
   double time_added;
   struct marathon_backend_config config;
   struct director *dir;
+  char *task_id;
   char *vcl_name;
   char *ipv4_addr;
   char *ipv6_addr;
