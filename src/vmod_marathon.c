@@ -1400,7 +1400,7 @@ VCL_VOID
 vmod_server__init(VRT_CTX, struct vmod_marathon_server **srvp,
                   const char *vcl_name, VCL_STRING endpoint,
                   VCL_DURATION connect_timeout, VCL_DURATION first_byte_timeout, 
-                  VCL_DURATION between_bytes_timeout, VCL_INT max_connections)
+                  VCL_DURATION between_bytes_timeout, VCL_INT max_connections, VCL_INT debug)
 {
   struct vmod_marathon_server *srv = NULL;
   struct vsb *vsb;
@@ -1414,6 +1414,8 @@ vmod_server__init(VRT_CTX, struct vmod_marathon_server **srvp,
 
   ALLOC_OBJ(srv, VMOD_MARATHON_SERVER_MAGIC);
   CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
+
+  log_debug = debug;
 
   srv->vcl                = ctx->vcl;
   srv->vcl_name           = strdup(vcl_name);

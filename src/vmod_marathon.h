@@ -5,9 +5,9 @@
 #define CURL_BUF_SIZE_MAX 8388608 // 8MiB.
 #define SSE_PING_TIMEOUT  30
 
-#define MARATHON_DEBUG
-
 #define IPBUFSIZ (VTCP_ADDRBUFSIZE + VTCP_PORTBUFSIZE + 2)
+
+unsigned int log_debug;
 
 #define MARATHON_LOG(ctx, level, message, ...) \
     do { \
@@ -48,12 +48,10 @@
 #define MARATHON_LOG_INFO(ctx, message, ...) \
     MARATHON_LOG(ctx, LOG_INFO, message, ##__VA_ARGS__)
 
-#ifdef MARATHON_DEBUG
-  #define MARATHON_LOG_DEBUG(ctx, message, ...) \
-    MARATHON_LOG(ctx, LOG_INFO, message, ##__VA_ARGS__)
-  #else
-    #define MARATHON_LOG_DEBUG(ctx, message, ...)
-#endif
+#define MARATHON_LOG_DEBUG(ctx, message, ...) \
+    if (log_debug) {\
+    MARATHON_LOG(ctx, LOG_INFO, message, ##__VA_ARGS__); \
+    }
 
 struct marathon_backend_config {
   VRT_BACKEND_FIELDS();
