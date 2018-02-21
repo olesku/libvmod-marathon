@@ -433,6 +433,8 @@ delete_application(struct vmod_marathon_server *srv, struct marathon_application
   free(app->marathon_app_endpoint);
   FREE_OBJ(app);
   AZ(app);
+
+  // TODO: Actually delete the app from srv->app_list.
 }
 
 /*
@@ -570,6 +572,8 @@ static unsigned int marathon_tasklist_has_id(yajl_val tasks, const char *id) {
 unsigned int marathon_app_delete_task(struct vmod_marathon_server *srv, struct marathon_application *app, const char* id) {
   struct marathon_backend *be = NULL, *be_n = NULL;
 
+  Lck_AssertHeld(&app->mtx);
+
   // TODO: We should store task_id_len in the marathon_backend struct.
   unsigned int id_len = strlen(id);
 
@@ -580,6 +584,8 @@ unsigned int marathon_app_delete_task(struct vmod_marathon_server *srv, struct m
       return 1;
     }
   }
+
+  if (VTAILQ_EMPTY(&app->belist)) app->curbe = NULL;
 
   return 0;
 }
@@ -691,11 +697,15 @@ marathon_update_application (struct vmod_marathon_server *srv,
   static const char *healthchecks_path[]  = {"app", "healthChecks", (const char *) 0};
   yajl_val healthchecks = yajl_tree_get(node, healthchecks_path, yajl_t_array);
 
+  Lck_Lock(&app->mtx);
+  app->has_healthchecks = 0;
+
   if (healthchecks && YAJL_IS_ARRAY(healthchecks)) {
     if (healthchecks->u.array.len > 0) {
       app->has_healthchecks = 1;
     }
   }
+  Lck_Unlock(&app->mtx);
 
   marathon_update_backends(srv, app, node);
   marathon_update_application_labels(app, node);
@@ -771,7 +781,6 @@ add_application(struct vmod_marathon_server *srv, const char *appid)
   app->id = strdup(appid);
   app->id_len = strlen(app->id);
   app->curbe = NULL;
-  app->has_healthchecks = 0;
 
   INIT_OBJ(&app->dir, DIRECTOR_MAGIC);
 
@@ -903,7 +912,7 @@ handle_sse_event(struct vmod_marathon_server *srv, const char *event_type, const
     }
   }
 
-  // TODO: Handle delete and health_status_changed_event event.
+  // TODO: Handle delete event.
 
   yajl_tree_free(json_node);
 }
