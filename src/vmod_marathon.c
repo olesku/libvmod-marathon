@@ -179,6 +179,9 @@ static void free_be(struct vmod_marathon_server *srv, struct marathon_backend *b
   free(be->port);
 
   VRT_delete_backend(&ctx, &be->dir);
+
+  FREE_OBJ(be);
+  AZ(be);
 }
 
 /*
@@ -192,19 +195,16 @@ free_be_list(struct vmod_marathon_server *srv, struct marathon_application *app)
   CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
   CHECK_OBJ_NOTNULL(app, VMOD_MARATHON_APPLICATION_MAGIC);
 
-  Lck_Lock(&app->mtx);
+  Lck_AssertHeld(&app->mtx);
 
   VTAILQ_FOREACH_SAFE(mbe, &app->belist, next, mben) {
-    free_be(srv, mbe);
     VTAILQ_REMOVE(&app->belist, mbe, next);
-    FREE_OBJ(mbe);
-    AZ(mbe);
+    free_be(srv, mbe);
   }
 
   VTAILQ_INIT(&app->belist);
 
   app->curbe = NULL;
-  Lck_Unlock(&app->mtx);
 }
 
 /*
@@ -217,7 +217,7 @@ free_label_list(struct marathon_application *app)
 
   CHECK_OBJ_NOTNULL(app, VMOD_MARATHON_APPLICATION_MAGIC);
 
-  Lck_Lock(&app->mtx);
+  Lck_AssertHeld(&app->mtx);
 
   VTAILQ_FOREACH_SAFE(mlabel, &app->labels, next, mlabel_next) {
     free(mlabel->key);
@@ -228,8 +228,6 @@ free_label_list(struct marathon_application *app)
   }
 
   VTAILQ_INIT(&app->labels);
-
-  Lck_Unlock(&app->mtx);
 }
 
 /*
@@ -299,8 +297,7 @@ marathon_get_app_by_label(struct vmod_marathon_server* srv, const char *key, con
  Round-robin director resolver function.
 */
 static const struct director * __match_proto__(vdi_resolve_f)
-marathon_resolve(const struct director *dir, struct worker *wrk,
-    struct busyobj *bo)
+marathon_resolve(const struct director *dir, struct worker *wrk, struct busyobj *bo)
 {
   struct marathon_application *app = NULL;
 
@@ -421,20 +418,28 @@ add_backend(struct vmod_marathon_server *srv, struct marathon_application *app,
 static void
 delete_application(struct vmod_marathon_server *srv, struct marathon_application *app)
 {
+  struct marathon_application *app_elm = NULL;
+
   CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
   CHECK_OBJ_NOTNULL(app, VMOD_MARATHON_APPLICATION_MAGIC);
 
+  Lck_AssertHeld(&app->mtx);
+
+  VTAILQ_FOREACH(app_elm, &srv->app_list, next) {
+    if (app_elm == app) {
+      MARATHON_LOG_DEBUG(NULL, "Deleting application %s", app->id);
+      VTAILQ_REMOVE(&srv->app_list, app_elm, next);
+      break;
+    }
+  }
+
   free_be_list(srv, app);
   free_label_list(app);
-
-  Lck_Delete(&app->mtx);
 
   free(app->id);
   free(app->marathon_app_endpoint);
   FREE_OBJ(app);
   AZ(app);
-
-  // TODO: Actually delete the app from srv->app_list.
 }
 
 /*
@@ -473,8 +478,8 @@ marathon_update_application_labels(struct marathon_application *app, yajl_val js
   yajl_val labels = yajl_tree_get(json_node, labels_path, yajl_t_object);
 
   if (labels && YAJL_IS_OBJECT(labels)) {
+    Lck_AssertHeld(&app->mtx);
     free_label_list(app);
-    Lck_Lock(&app->mtx);
     for (unsigned int i = 0; i < labels->u.object.len; i++) {
       const char* key = labels->u.object.keys[i];
       yajl_val val = labels->u.object.values[i];
@@ -493,7 +498,6 @@ marathon_update_application_labels(struct marathon_application *app, yajl_val js
         VTAILQ_INSERT_TAIL(&app->labels, mlabel, next);
       }
     }
-    Lck_Unlock(&app->mtx);
   }
 
   return 1;
@@ -571,21 +575,21 @@ static unsigned int marathon_tasklist_has_id(yajl_val tasks, const char *id) {
 
 unsigned int marathon_app_delete_task(struct vmod_marathon_server *srv, struct marathon_application *app, const char* id) {
   struct marathon_backend *be = NULL, *be_n = NULL;
+  unsigned int id_len = strlen(id);
 
   Lck_AssertHeld(&app->mtx);
 
-  // TODO: We should store task_id_len in the marathon_backend struct.
-  unsigned int id_len = strlen(id);
-
   VTAILQ_FOREACH_SAFE(be, &app->belist, next, be_n) {
     if (memcmp(be->task_id, id, id_len) == 0) {
+      if (app->curbe == be) {
+        app->curbe = VTAILQ_NEXT(app->curbe, next);
+      }
+
       VTAILQ_REMOVE(&app->belist, be, next);
       free_be(srv, be);
       return 1;
     }
   }
-
-  if (VTAILQ_EMPTY(&app->belist)) app->curbe = NULL;
 
   return 0;
 }
@@ -666,9 +670,7 @@ static int marathon_update_backends(struct vmod_marathon_server *srv, struct mar
   yajl_val tasks = yajl_tree_get(json_node, task_path, yajl_t_array);
 
     if (tasks && YAJL_IS_ARRAY(tasks)) {
-      Lck_Lock(&app->mtx);
       update_backend_list_delta(srv,tasks, app);
-      Lck_Unlock(&app->mtx);
       app->last_update = VTIM_real();
     }
 
@@ -705,10 +707,10 @@ marathon_update_application (struct vmod_marathon_server *srv,
       app->has_healthchecks = 1;
     }
   }
-  Lck_Unlock(&app->mtx);
 
   marathon_update_backends(srv, app, node);
   marathon_update_application_labels(app, node);
+  Lck_Unlock(&app->mtx);
 
   yajl_tree_free(node);
 
