@@ -29,7 +29,6 @@
 #include "vmod_marathon.h"
 
 struct vmod_marathon_head objects = VTAILQ_HEAD_INITIALIZER(objects);
-
 static struct VSC_C_lck *lck_queue, *lck_app;
 static unsigned loadcnt = 0;
 
@@ -51,7 +50,8 @@ init_curl_buffer(struct curl_recvbuf *buf)
 * Free curl_recvbuffer.
 */
 static void
-free_curl_buffer(struct curl_recvbuf *buf) {
+free_curl_buffer(struct curl_recvbuf *buf)
+{
   buf->size = 0;
   buf->data_len = 0;
   free(buf->data);
@@ -103,6 +103,8 @@ curl_fetch(struct curl_recvbuf *buf, const char* url)
   CURLcode res;
 
   curl = curl_easy_init();
+  curl_easy_setopt(curl, CURLOPT_STDERR, NULL);
+  curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, buf);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_fetch_cb);
   curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
@@ -162,7 +164,9 @@ get_addrname(char *addr, struct suckaddr *sa)
 /*
 * Free a backend.
 */
-static void free_be(struct vmod_marathon_server *srv, struct marathon_backend *be) {
+static void
+free_be(struct vmod_marathon_server *srv, struct marathon_backend *be)
+{
   struct vrt_ctx ctx;
 
   CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
@@ -445,7 +449,9 @@ delete_application(struct vmod_marathon_server *srv, struct marathon_application
 /*
 * Fetch JSON from a URL into a yajl_val object.
 */
-static int fetch_json_data(yajl_val *node, const char *endpoint) {
+static int
+fetch_json_data(yajl_val *node, const char *endpoint)
+{
   struct curl_recvbuf buf;
   CURLcode res;
   char errbuf[1024];
@@ -513,9 +519,7 @@ int marathon_get_task_health(struct marathon_application *app, yajl_val task) {
   if (strncmp(state_str, "TASK_RUNNING", 12) != 0 || !app->has_healthchecks)
     return 0;
 
-  /*
-  * If we have healthchecks enabled on the app then also take them into consideration.
-  */
+  // If we have healthchecks enabled on the app then also take them into consideration.
   if (app->has_healthchecks) {
     static const char *healthcheck_results_path[]  = {"healthCheckResults", (const char *) 0};
     static const char *alive_path[]  = {"alive", (const char *) 0};
@@ -540,7 +544,8 @@ int marathon_get_task_health(struct marathon_application *app, yajl_val task) {
   return 1;
 }
 
-struct marathon_backend *marathon_app_get_task_id(struct marathon_application *app, const char *task_id)
+static struct marathon_backend *
+marathon_app_get_task_id(struct marathon_application *app, const char *task_id)
 {
   unsigned int task_id_len = strlen(task_id);
 
@@ -554,7 +559,9 @@ struct marathon_backend *marathon_app_get_task_id(struct marathon_application *a
   return NULL;
 }
 
-static unsigned int marathon_tasklist_has_id(yajl_val tasks, const char *id) {
+static unsigned int
+marathon_tasklist_has_id(yajl_val tasks, const char *id)
+{
   unsigned int id_len           = strlen(id);
   static const char *id_path[]  = {"id", (const char *) 0};
 
@@ -573,7 +580,9 @@ static unsigned int marathon_tasklist_has_id(yajl_val tasks, const char *id) {
   return 0;
 }
 
-unsigned int marathon_app_delete_task(struct vmod_marathon_server *srv, struct marathon_application *app, const char* id) {
+static unsigned int
+marathon_app_delete_task(struct vmod_marathon_server *srv, struct marathon_application *app, const char* id)
+{
   struct marathon_backend *be = NULL, *be_n = NULL;
   unsigned int id_len = strlen(id);
 
@@ -594,7 +603,8 @@ unsigned int marathon_app_delete_task(struct vmod_marathon_server *srv, struct m
   return 0;
 }
 
-static void update_backend_list_delta(struct vmod_marathon_server *srv, yajl_val tasks, struct marathon_application *app)
+static void
+update_backend_list_delta(struct vmod_marathon_server *srv, yajl_val tasks, struct marathon_application *app)
 {
   static const char *host_path[]  = {"host",  (const char *) 0};
   static const char *ports_path[] = {"ports", (const char *) 0};
@@ -662,8 +672,8 @@ static void update_backend_list_delta(struct vmod_marathon_server *srv, yajl_val
 /*
 * Fetch backends from Marathon.
 */
-static int marathon_update_backends(struct vmod_marathon_server *srv, struct marathon_application *app,
-                                    yajl_val json_node)
+static int
+marathon_update_backends(struct vmod_marathon_server *srv, struct marathon_application *app, yajl_val json_node)
 {
   static const char *task_path[]  = {"app", "tasks", (const char *) 0};
 
@@ -721,7 +731,8 @@ marathon_update_application (struct vmod_marathon_server *srv,
 * Schedule update of a given marathon_application.
 */
 static void
-marathon_schedule_update(struct vmod_marathon_server *srv, struct marathon_application *app) {
+marathon_schedule_update(struct vmod_marathon_server *srv, struct marathon_application *app)
+{
 
   struct marathon_update_queue_item *queue_elm = NULL;
 
@@ -814,7 +825,8 @@ add_application(struct vmod_marathon_server *srv, const char *appid)
 * Fetch application list from Marathon and import it to srv->app_list.
 */
 static int
-get_application_list(struct vmod_marathon_server *srv) {
+get_application_list(struct vmod_marathon_server *srv)
+{
   yajl_val node = NULL;
   static const char *apps_path[] = {"apps", (const char *) 0};
   static const char *id_path[]   = {"id",   (const char *) 0};
@@ -886,7 +898,8 @@ marathon_update_thread_func(void *ptr) {
 * SSE event handler function.
 */
 static void
-handle_sse_event(struct vmod_marathon_server *srv, const char *event_type, const char *event_data) {
+handle_sse_event(struct vmod_marathon_server *srv, const char *event_type, const char *event_data)
+{
   char errbuf[2048];
   yajl_val json_node = NULL;
 
@@ -924,7 +937,7 @@ handle_sse_event(struct vmod_marathon_server *srv, const char *event_type, const
 */
 static size_t 
 curl_sse_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
- {
+{
   struct sse_cb_ctx *cb_ctx = NULL;
   struct vmod_marathon_server *srv = NULL;
   struct curl_recvbuf *buf = NULL;
@@ -1077,6 +1090,7 @@ sse_event_thread_func(void *ptr)
   headers = curl_slist_append(headers, "Accept: text/event-stream");
   res = curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
+  curl_easy_setopt(curl, CURLOPT_STDERR, NULL);
   curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
   curl_easy_setopt(curl, CURLOPT_PROGRESSFUNCTION, &sse_progress_callback);
   curl_easy_setopt(curl, CURLOPT_PROGRESSDATA, &cb_ctx);
@@ -1267,7 +1281,8 @@ vmod_server_json_stats(VRT_CTX, struct vmod_marathon_server *srv)
 * Start SSE event thread and marathon update thread.
 */
 static void
-marathon_start(struct vmod_marathon_server *srv) {
+marathon_start(struct vmod_marathon_server *srv)
+{
   CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
 
   MARATHON_LOG_INFO(NULL, "Starting update thread.");
@@ -1280,7 +1295,8 @@ marathon_start(struct vmod_marathon_server *srv) {
 * Stop running threads and free backend list.
 */
 static void
-marathon_stop(struct vmod_marathon_server *srv) {
+marathon_stop(struct vmod_marathon_server *srv)
+{
   struct marathon_application *app = NULL, *appn = NULL;
 
   CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
