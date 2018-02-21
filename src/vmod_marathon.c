@@ -522,8 +522,15 @@ int marathon_get_task_health(struct marathon_application *app, yajl_val task) {
   const char *id_str              = YAJL_GET_STRING(id);
 
   // Only consider apps that has healthchecks and tasks that is in TASK_RUNNING state.
-  if (strncmp(state_str, "TASK_RUNNING", 12) != 0 || !app->has_healthchecks)
+  if (strncmp(state_str, "TASK_RUNNING", 12) != 0) {
+    MARATHON_LOG_DEBUG(NULL, "Task %s != TASK_RUNNING. State: %s", id_str, state_str);
     return 0;
+  } 
+
+  if (!app->has_healthchecks) {
+    MARATHON_LOG_DEBUG(NULL, "No healthchecks configured for task %s", id_str);
+    return 0;
+  }
 
   // If we have healthchecks enabled on the app then also take them into consideration.
   if (app->has_healthchecks) {
@@ -544,9 +551,12 @@ int marathon_get_task_health(struct marathon_application *app, yajl_val task) {
       }
     } else {
       // Return false if there is no healthcheck results yet.
+      MARATHON_LOG_DEBUG(NULL, "No healthcheck results for task %s available yet.", id_str);
       return 0;
     }
   }
+  
+  MARATHON_LOG_DEBUG(NULL, "Healthcheck for task %s passed.", id_str);
 
   return 1;
 }
