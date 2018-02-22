@@ -1413,6 +1413,15 @@ vmod_server_reload(VRT_CTX, struct vmod_marathon_server *srv) {
   marathon_start(srv);
 }
 
+/*
+* VCL function debug()
+* Enable debug logging.
+*/
+VCL_VOID
+vmod_debug(VRT_CTX, VCL_INT debug) {
+  log_debug = debug;
+}
+
 /* 
  * Constructor for marathon.server object.
 */
@@ -1420,7 +1429,7 @@ VCL_VOID
 vmod_server__init(VRT_CTX, struct vmod_marathon_server **srvp,
                   const char *vcl_name, VCL_STRING endpoint,
                   VCL_DURATION connect_timeout, VCL_DURATION first_byte_timeout, 
-                  VCL_DURATION between_bytes_timeout, VCL_INT max_connections, VCL_INT debug)
+                  VCL_DURATION between_bytes_timeout, VCL_INT max_connections)
 {
   struct vmod_marathon_server *srv = NULL;
   struct vsb *vsb;
@@ -1434,8 +1443,6 @@ vmod_server__init(VRT_CTX, struct vmod_marathon_server **srvp,
 
   ALLOC_OBJ(srv, VMOD_MARATHON_SERVER_MAGIC);
   CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
-
-  log_debug = debug;
 
   srv->vcl                = ctx->vcl;
   srv->vcl_name           = strdup(vcl_name);

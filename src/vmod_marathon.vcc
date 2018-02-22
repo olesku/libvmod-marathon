@@ -2,9 +2,11 @@ $Module marathon 3 Marathon VMOD
 
 $Event event_func
 
+$Function VOID debug(INT debug=1)
+
 $Object server(STRING endpoint="",
                DURATION connect_timeout=0, DURATION first_byte_timeout=0,
-               DURATION between_bytes_timeout=0, INT max_connections=0, INT debug=0)
+               DURATION between_bytes_timeout=0, INT max_connections=0)
 
 $Method VOID    .set_backend_config(STRING id="", PROBE probe=0,
                                     INT port_index=0,
