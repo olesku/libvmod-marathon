@@ -1323,6 +1323,7 @@ marathon_stop(struct vmod_marathon_server *srv)
   MARATHON_LOG_INFO(NULL, "Update thread terminated.");
 
   VTAILQ_FOREACH_SAFE(app, &srv->app_list, next, appn) {
+    Lck_Lock(&app->mtx);
     delete_application(srv, app);
   }
 }
@@ -1391,6 +1392,25 @@ event_func(VRT_CTX, struct vmod_priv *vcl_priv, enum vcl_event_e e)
   }
 
   return 0;
+}
+
+/*
+* VCL function .reload()
+* Reloads this vmod.
+*/
+VCL_VOID
+vmod_server_reload(VRT_CTX, struct vmod_marathon_server *srv) {
+  CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
+  CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
+
+  MARATHON_LOG_INFO(NULL, "Reload event triggered, reloading.");
+  srv->active = 0;
+  MARATHON_LOG_DEBUG(NULL, "marathon_stop");
+  marathon_stop(srv);
+
+  srv->active = 1;
+  MARATHON_LOG_DEBUG(NULL, "marathon_start");
+  marathon_start(srv);
 }
 
 /* 

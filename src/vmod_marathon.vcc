@@ -14,3 +14,4 @@ $Method VOID    .set_backend_config(STRING id="", PROBE probe=0,
 $Method BACKEND .backend_by_id(STRING id="")
 $Method BACKEND .backend_by_label(STRING key="", STRING val="")
 $Method STRING  .json_stats()
+$Method VOID    .reload()
