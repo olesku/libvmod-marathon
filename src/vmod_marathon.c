@@ -9,6 +9,7 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <syslog.h>
+#include <time.h>
 
 #include <curl/curl.h>
 #include <yajl/yajl_tree.h>
@@ -1240,6 +1241,7 @@ vmod_server_json_stats(VRT_CTX, struct vmod_marathon_server *srv)
   size_t len;
   struct marathon_application *app = NULL;
   struct marathon_backend *be = NULL;
+  char vtim_buf[VTIM_FORMAT_SIZE];
 
   gen = yajl_gen_alloc(NULL);
 
@@ -1260,8 +1262,9 @@ vmod_server_json_stats(VRT_CTX, struct vmod_marathon_server *srv)
     yajl_gen_string(gen, (const unsigned char *)"id", 2);
     yajl_gen_string(gen, (const unsigned char *)app->id, app->id_len);
 
+    VTIM_format(app->last_update, vtim_buf);
     yajl_gen_string(gen, (const unsigned char *)"last_update", 11);
-    yajl_gen_integer(gen, app->last_update);
+    yajl_gen_string(gen, (const unsigned char *)&vtim_buf, strlen(vtim_buf));
 
     yajl_gen_string(gen, (const unsigned char *)"has_healthchecks", 16);
     yajl_gen_bool(gen, app->has_healthchecks);
@@ -1284,9 +1287,11 @@ vmod_server_json_stats(VRT_CTX, struct vmod_marathon_server *srv)
       yajl_gen_string(gen, (const unsigned char *)"host", 4);
       yajl_gen_string(gen, (const unsigned char *)be->host, strlen(be->host));
       yajl_gen_string(gen, (const unsigned char *)"port", 4);
+
+      VTIM_format(be->time_added, vtim_buf);
       yajl_gen_string(gen, (const unsigned char *)be->port, strlen(be->port));
       yajl_gen_string(gen, (const unsigned char *)"time_added", 10);
-      yajl_gen_integer(gen, be->time_added);
+      yajl_gen_string(gen, (const unsigned char *)vtim_buf, strlen(vtim_buf));
       yajl_gen_map_close(gen);
     }
 
