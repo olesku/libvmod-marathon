@@ -936,7 +936,7 @@ handle_sse_event(struct vmod_marathon_server *srv, const char *event_type, const
 
   yajl_val app_id = yajl_tree_get(json_node, appid_path, yajl_t_string);
 
-  MARATHON_LOG_DEBUG(NULL, "handle_sse_event: %s on %s.", event_type, YAJL_GET_STRING(app_id));
+  MARATHON_LOG_DEBUG(NULL, "handle_sse_event: %s on %s", event_type, YAJL_GET_STRING(app_id));
 
   if (strncmp(event_type, "status_update_event", 22) == 0 || strncmp(event_type, "health_status_changed_event", 27) == 0) {
     if (YAJL_IS_STRING(app_id)) {
@@ -1127,7 +1127,7 @@ sse_event_thread_func(void *ptr)
     get_application_list(srv);
     marathon_perform_update(srv);
 
-    MARATHON_LOG_INFO(NULL, "Starting SSE connection.");
+    MARATHON_LOG_INFO(NULL, "Establishing SSE connection.");
     res = curl_easy_perform(curl);
 
     if (res != CURLE_OK) {
