@@ -210,6 +210,7 @@ free_be_list(struct vmod_marathon_server *srv, struct marathon_application *app)
   VTAILQ_INIT(&app->belist);
 
   app->curbe = NULL;
+  app->num_healthy_instances = 0;
 }
 
 /*
@@ -415,6 +416,7 @@ add_task(struct vmod_marathon_server *srv, struct marathon_application *app,
 
   mbe->time_added = VTIM_real();
   VTAILQ_INSERT_TAIL(&app->belist, mbe, next);
+  app->num_healthy_instances++;
 
   return mbe;
 }
@@ -615,6 +617,7 @@ marathon_app_delete_task(struct vmod_marathon_server *srv, struct marathon_appli
 
       MARATHON_LOG_DEBUG(NULL, "Deleting task %s from %s", id, app->id);
       VTAILQ_REMOVE(&app->belist, be, next);
+      app->num_healthy_instances--;
       free_be(srv, be);
       return 1;
     }
@@ -630,6 +633,8 @@ update_backend_list_delta(struct vmod_marathon_server *srv, yajl_val tasks, stru
   static const char *ports_path[] = {"ports", (const char *) 0};
   static const char *id_path[]    = {"id", (const char *) 0};
 
+  app->num_instances = 0;
+
   for (unsigned int i = 0; i < tasks->u.array.len; i++) {
     yajl_val task  = tasks->u.array.values[i];
     yajl_val id    = yajl_tree_get(task, id_path, yajl_t_string);
@@ -643,6 +648,8 @@ update_backend_list_delta(struct vmod_marathon_server *srv, yajl_val tasks, stru
         !YAJL_IS_INTEGER(ports->u.array.values[0])) {
       continue;
     }
+
+    app->num_instances++;
 
     unsigned int port_index = 0;
 
@@ -809,6 +816,8 @@ add_application(struct vmod_marathon_server *srv, const char *appid)
 
   app->id = strdup(appid);
   app->id_len = strlen(app->id);
+  app->num_instances = 0;
+  app->num_healthy_instances = 0;
   app->curbe = NULL;
 
   INIT_OBJ(&app->dir, DIRECTOR_MAGIC);
@@ -1256,6 +1265,14 @@ vmod_server_json_stats(VRT_CTX, struct vmod_marathon_server *srv)
 
     yajl_gen_string(gen, (const unsigned char *)"has_healthchecks", 16);
     yajl_gen_bool(gen, app->has_healthchecks);
+
+    yajl_gen_string(gen, (const unsigned char *)"instances", 9);
+    yajl_gen_integer(gen, app->num_instances);
+
+    if (app->has_healthchecks) {
+      yajl_gen_string(gen, (const unsigned char *)"healthy_instances", 17);
+      yajl_gen_integer(gen, app->num_healthy_instances);
+    }
 
     yajl_gen_string(gen, (const unsigned char *)"tasks", 5);
     yajl_gen_array_open(gen);

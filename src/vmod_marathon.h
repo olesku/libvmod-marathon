@@ -106,6 +106,8 @@ struct marathon_application {
   struct marathon_backend_head belist;
   struct marathon_application_label_head labels;
   unsigned int has_healthchecks;
+  unsigned int num_instances;
+  unsigned int num_healthy_instances;
   
   struct lock mtx;
   VTAILQ_ENTRY(marathon_application) next;
