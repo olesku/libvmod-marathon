@@ -180,6 +180,7 @@ free_be(struct vmod_marathon_server *srv, struct marathon_backend *be)
   free(be->task_id);
   free(be->ipv4_addr);
   free(be->ipv6_addr);
+  free(be->host);
   free(be->port);
 
   VRT_delete_backend(&ctx, &be->dir);
@@ -375,7 +376,8 @@ add_task(struct vmod_marathon_server *srv, struct marathon_application *app,
   mbe->task_id   = strdup(task_id);
   mbe->ipv4_addr = strdup(ipv4_addr);
   mbe->ipv6_addr = strdup(ipv6_addr);
-  mbe->port = strdup(port);
+  mbe->host      = strdup(host);
+  mbe->port      = strdup(port);
 
   memset(&be, 0, sizeof(struct vrt_backend));
   INIT_OBJ(&be, VRT_BACKEND_MAGIC);
@@ -1263,7 +1265,7 @@ vmod_server_json_stats(VRT_CTX, struct vmod_marathon_server *srv)
       yajl_gen_string(gen, (const unsigned char *)"id", 2);
       yajl_gen_string(gen, (const unsigned char *)be->task_id, strlen(be->task_id));
       yajl_gen_string(gen, (const unsigned char *)"host", 4);
-      yajl_gen_string(gen, (const unsigned char *)be->ipv4_addr, strlen(be->ipv4_addr));
+      yajl_gen_string(gen, (const unsigned char *)be->host, strlen(be->host));
       yajl_gen_string(gen, (const unsigned char *)"port", 4);
       yajl_gen_string(gen, (const unsigned char *)be->port, strlen(be->port));
       yajl_gen_string(gen, (const unsigned char *)"time_added", 10);

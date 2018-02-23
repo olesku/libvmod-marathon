@@ -70,6 +70,7 @@ struct marathon_backend {
   char *vcl_name;
   char *ipv4_addr;
   char *ipv6_addr;
+  char *host;
   char *port;
   VTAILQ_ENTRY(marathon_backend) next;
 };
