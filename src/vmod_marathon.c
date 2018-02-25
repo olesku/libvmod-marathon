@@ -30,7 +30,13 @@
 #include "vmod_marathon.h"
 
 struct vmod_marathon_head objects = VTAILQ_HEAD_INITIALIZER(objects);
+
+#ifdef HAVE_VSC_LCK
+static struct VSC_lck *lck_queue, *lck_app;
+#else
 static struct VSC_C_lck *lck_queue, *lck_app;
+#endif
+
 static unsigned loadcnt = 0;
 
 /*
@@ -338,6 +344,7 @@ static unsigned __match_proto__(vdi_healthy_f)
 marathon_healthy(const struct director *dir, const struct busyobj *bo,
                  double *changed)
 {
+  // TODO: Implement this.
   return 1;
 }
 
@@ -486,9 +493,7 @@ fetch_json_data(yajl_val *node, const char *endpoint)
 */
 static int
 marathon_update_application_labels(struct marathon_application *app, yajl_val json_node) {
-  static const char *labels_path[] = { "app", "labels", (const char *) 0 };
-
-  yajl_val labels = yajl_tree_get(json_node, labels_path, yajl_t_object);
+  yajl_val labels = yajl_tree_get(json_node, YAJL_PATH_MARATHON_APP_LABELS, yajl_t_object);
 
   if (labels && YAJL_IS_OBJECT(labels)) {
     Lck_AssertHeld(&app->mtx);
@@ -518,11 +523,8 @@ marathon_update_application_labels(struct marathon_application *app, yajl_val js
 
 static
 int marathon_get_task_health(struct marathon_application *app, yajl_val task) {
-  static const char *state_path[] = {"state", (const char *) 0};
-  static const char *id_path[]    = {"id", (const char *) 0};
-
-  yajl_val state                  = yajl_tree_get(task, state_path, yajl_t_string);
-  yajl_val id                     = yajl_tree_get(task, id_path, yajl_t_string);
+  yajl_val state                  = yajl_tree_get(task, YAJL_PATH_MARATHON_STATE, yajl_t_string);
+  yajl_val id                     = yajl_tree_get(task, YAJL_PATH_MARATHON_ID, yajl_t_string);
   const char *state_str           = YAJL_GET_STRING(state);
   const char *id_str              = YAJL_GET_STRING(id);
 
@@ -539,15 +541,12 @@ int marathon_get_task_health(struct marathon_application *app, yajl_val task) {
 
   // If we have healthchecks enabled on the app then also take them into consideration.
   if (app->has_healthchecks) {
-    static const char *healthcheck_results_path[]  = {"healthCheckResults", (const char *) 0};
-    static const char *alive_path[]  = {"alive", (const char *) 0};
-
-    yajl_val healthcheck_results = yajl_tree_get(task, healthcheck_results_path, yajl_t_array);
+    yajl_val healthcheck_results = yajl_tree_get(task, YAJL_PATH_MARATHON_HEALTH_CHECK_RESULTS, yajl_t_array);
 
     if (healthcheck_results && YAJL_IS_ARRAY(healthcheck_results)) {
       for (unsigned int i = 0; i < healthcheck_results->u.array.len; i++) {
         yajl_val healthcheck_result = healthcheck_results->u.array.values[i];
-        yajl_val alive = yajl_tree_get(healthcheck_result, alive_path, yajl_t_any);
+        yajl_val alive = yajl_tree_get(healthcheck_result, YAJL_PATH_MARATHON_ALIVE, yajl_t_any);
 
         if (!YAJL_IS_TRUE(alive)) {
           MARATHON_LOG_DEBUG(NULL, "Healthcheck failed for task %s", id_str);
@@ -585,11 +584,10 @@ static unsigned int
 marathon_tasklist_has_id(yajl_val tasks, const char *id)
 {
   unsigned int id_len           = strlen(id);
-  static const char *id_path[]  = {"id", (const char *) 0};
 
   for (unsigned int i = 0; i < tasks->u.array.len; i++) {
     yajl_val task  = tasks->u.array.values[i];
-    yajl_val tid    = yajl_tree_get(task, id_path, yajl_t_string);
+    yajl_val tid    = yajl_tree_get(task, YAJL_PATH_MARATHON_ID, yajl_t_string);
 
     if (tid && YAJL_IS_STRING(tid)) {
       const char *id_str = YAJL_GET_STRING(tid);
@@ -628,19 +626,15 @@ marathon_app_delete_task(struct vmod_marathon_server *srv, struct marathon_appli
 }
 
 static void
-update_backend_list_delta(struct vmod_marathon_server *srv, yajl_val tasks, struct marathon_application *app)
+marathon_update_task_list(struct vmod_marathon_server *srv, yajl_val tasks, struct marathon_application *app)
 {
-  static const char *host_path[]  = {"host",  (const char *) 0};
-  static const char *ports_path[] = {"ports", (const char *) 0};
-  static const char *id_path[]    = {"id", (const char *) 0};
-
   app->num_instances = 0;
 
   for (unsigned int i = 0; i < tasks->u.array.len; i++) {
     yajl_val task  = tasks->u.array.values[i];
-    yajl_val id    = yajl_tree_get(task, id_path, yajl_t_string);
-    yajl_val host  = yajl_tree_get(task, host_path, yajl_t_string);
-    yajl_val ports = yajl_tree_get(task, ports_path, yajl_t_array);
+    yajl_val id    = yajl_tree_get(task, YAJL_PATH_MARATHON_ID, yajl_t_string);
+    yajl_val host  = yajl_tree_get(task, YAJL_PATH_MARATHON_HOST, yajl_t_string);
+    yajl_val ports = yajl_tree_get(task, YAJL_PATH_MARATHON_PORTS, yajl_t_array);
 
     const char *host_str = YAJL_GET_STRING(host);
     const char *id_str = YAJL_GET_STRING(id);
@@ -695,24 +689,6 @@ update_backend_list_delta(struct vmod_marathon_server *srv, yajl_val tasks, stru
 }
 
 /*
-* Fetch backends from Marathon.
-*/
-static int
-marathon_update_backends(struct vmod_marathon_server *srv, struct marathon_application *app, yajl_val json_node)
-{
-  static const char *task_path[]  = {"app", "tasks", (const char *) 0};
-
-  yajl_val tasks = yajl_tree_get(json_node, task_path, yajl_t_array);
-
-    if (tasks && YAJL_IS_ARRAY(tasks)) {
-      update_backend_list_delta(srv,tasks, app);
-      app->last_update = VTIM_real();
-    }
-
-  return 1;
-}
-
-/*
 * Update application with data from Marathon.
 */
 static int
@@ -730,9 +706,8 @@ marathon_update_application (struct vmod_marathon_server *srv,
     return 0;
   }
 
-  /* Check if application has healthcheck. */
-  static const char *healthchecks_path[]  = {"app", "healthChecks", (const char *) 0};
-  yajl_val healthchecks = yajl_tree_get(node, healthchecks_path, yajl_t_array);
+  // Check if application has healthcheck.
+  yajl_val healthchecks = yajl_tree_get(node, YAJL_PATH_MARATHON_HEALTHCHECKS, yajl_t_array);
 
   Lck_Lock(&app->mtx);
   app->has_healthchecks = 0;
@@ -743,10 +718,18 @@ marathon_update_application (struct vmod_marathon_server *srv,
     }
   }
 
-  marathon_update_backends(srv, app, node);
-  marathon_update_application_labels(app, node);
-  Lck_Unlock(&app->mtx);
+  // Update application task list.
+  yajl_val tasks = yajl_tree_get(node, YAJL_PATH_MARATHON_APP_TASKS, yajl_t_array);
 
+  if (tasks && YAJL_IS_ARRAY(tasks)) {
+    marathon_update_task_list(srv,tasks, app);
+    app->last_update = VTIM_real();
+  }
+
+  // Update application labels.
+  marathon_update_application_labels(app, node);
+
+  Lck_Unlock(&app->mtx);
   yajl_tree_free(node);
 
   return 1;
@@ -855,8 +838,6 @@ static int
 get_application_list(struct vmod_marathon_server *srv)
 {
   yajl_val node = NULL;
-  static const char *apps_path[] = {"apps", (const char *) 0};
-  static const char *id_path[]   = {"id",   (const char *) 0};
 
   CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
   MARATHON_LOG_DEBUG(NULL, "get_application_list endpoint: %s", srv->marathon_app_endpoint);
@@ -865,12 +846,12 @@ get_application_list(struct vmod_marathon_server *srv)
     return 0;
   }
 
-  yajl_val apps = yajl_tree_get(node, apps_path, yajl_t_array);
+  yajl_val apps = yajl_tree_get(node, YAJL_PATH_MARATHON_APPS, yajl_t_array);
 
   if (YAJL_IS_ARRAY(apps)) {
     for (unsigned int i = 0; i < apps->u.array.len; i++) {
       yajl_val app = apps->u.array.values[i];
-      yajl_val appid = yajl_tree_get(app, id_path, yajl_t_string);
+      yajl_val appid = yajl_tree_get(app, YAJL_PATH_MARATHON_ID, yajl_t_string);
 
       if (!YAJL_IS_STRING(appid)) {
         continue;
@@ -928,14 +909,13 @@ static void
 handle_sse_event(struct vmod_marathon_server *srv, const char *event_type, const char *event_data)
 {
   char errbuf[2048];
-  static const char *appid_path[] = {"appId", (const char *) 0};
   yajl_val json_node = yajl_tree_parse((const char*)event_data, errbuf, 2048);
 
   if (json_node == NULL) {
     return;
   }
 
-  yajl_val app_id = yajl_tree_get(json_node, appid_path, yajl_t_string);
+  yajl_val app_id = yajl_tree_get(json_node, YAJL_PATH_MARATHON_APPID, yajl_t_string);
 
   MARATHON_LOG_DEBUG(NULL, "handle_sse_event: %s on %s", event_type, YAJL_GET_STRING(app_id));
 
@@ -1164,7 +1144,7 @@ VCL_VOID
 vmod_server_set_backend_config(VRT_CTX, struct vmod_marathon_server *srv,
                    VCL_STRING id, VCL_PROBE probe, VCL_INT port_index,
                    VCL_DURATION connect_timeout, VCL_DURATION first_byte_timeout,
-                   VCL_DURATION between_bytes_timeout, VCL_INT max_connections)
+                   VCL_DURATION between_bytes_timeout, VCL_INT max_connections, VCL_INT proxy_header)
 {
   struct marathon_application *app = NULL;
   CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
@@ -1179,6 +1159,9 @@ vmod_server_set_backend_config(VRT_CTX, struct vmod_marathon_server *srv,
   app->backend_config.first_byte_timeout    = first_byte_timeout;
   app->backend_config.between_bytes_timeout = between_bytes_timeout;
   app->backend_config.max_connections       = max_connections;
+  #ifdef HAVE_BACKEND_PROXY
+  app->backend_config.proxy_header          = proxy_header;
+  #endif
 }
 
 /*
@@ -1244,6 +1227,7 @@ vmod_server_json_stats(VRT_CTX, struct vmod_marathon_server *srv)
   char vtim_buf[VTIM_FORMAT_SIZE];
 
   gen = yajl_gen_alloc(NULL);
+  yajl_gen_config(gen, yajl_gen_beautify, 1);
 
   if (gen == NULL) {
     return "{}";
@@ -1300,7 +1284,6 @@ vmod_server_json_stats(VRT_CTX, struct vmod_marathon_server *srv)
     yajl_gen_array_close(gen);
     yajl_gen_map_close(gen);
   }
-
 
   yajl_gen_array_close(gen);
   yajl_gen_map_close(gen);
@@ -1364,8 +1347,10 @@ event_func(VRT_CTX, struct vmod_priv *vcl_priv, enum vcl_event_e e)
   CHECK_OBJ_NOTNULL(ctx, VRT_CTX_MAGIC);
 
   switch(e) {
+    #ifdef HAVE_VCL_EVENT_USE
 	  case VCL_EVENT_USE:
 		  return (0);
+    #endif
 
     case VCL_EVENT_LOAD:
       if (loadcnt == 0) {
@@ -1383,8 +1368,13 @@ event_func(VRT_CTX, struct vmod_priv *vcl_priv, enum vcl_event_e e)
       assert(loadcnt > 0);
       loadcnt--;
       if (loadcnt == 0) {
+        #ifdef HAVE_LCK_DESTROYCLASS
+        Lck_DestroyClass(&lck_queue);
+        Lck_DestroyClass(&lck_app);
+        #else
         VSM_Free(lck_queue);
         VSM_Free(lck_app);
+        #endif
       }
 
       return 0;
@@ -1438,11 +1428,11 @@ vmod_server_reload(VRT_CTX, struct vmod_marathon_server *srv) {
 }
 
 /*
-* VCL function debug()
+* VCL function debug_log()
 * Enable debug logging.
 */
 VCL_VOID
-vmod_debug(VRT_CTX, VCL_INT debug) {
+vmod_debug_log(VRT_CTX, VCL_INT debug) {
   log_debug = debug;
 }
 
@@ -1453,7 +1443,7 @@ VCL_VOID
 vmod_server__init(VRT_CTX, struct vmod_marathon_server **srvp,
                   const char *vcl_name, VCL_STRING endpoint,
                   VCL_DURATION connect_timeout, VCL_DURATION first_byte_timeout, 
-                  VCL_DURATION between_bytes_timeout, VCL_INT max_connections)
+                  VCL_DURATION between_bytes_timeout, VCL_INT max_connections, VCL_INT proxy_header)
 {
   struct vmod_marathon_server *srv = NULL;
   struct vsb *vsb;
@@ -1503,6 +1493,9 @@ vmod_server__init(VRT_CTX, struct vmod_marathon_server **srvp,
   srv->default_backend_config.first_byte_timeout    = first_byte_timeout;
   srv->default_backend_config.between_bytes_timeout = between_bytes_timeout;
   srv->default_backend_config.max_connections       = max_connections;
+  #ifdef HAVE_BACKEND_PROXY
+  srv->default_backend_config.proxy_header          = proxy_header;
+  #endif
   srv->default_backend_config.probe                 = NULL;
   srv->default_backend_config.port_index            = 0;
   

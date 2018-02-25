@@ -163,3 +163,15 @@ struct sse_cb_ctx {
 
 VTAILQ_HEAD(vmod_marathon_head, vmod_marathon_server) objects;
 extern struct vmod_marathon_head objects;
+
+#define YAJL_PATH_MARATHON_HEALTHCHECKS         (const char*[]){"app", "healthChecks", (const char *)0}
+#define YAJL_PATH_MARATHON_ALIVE                (const char*[]){"alive", (const char *)0}
+#define YAJL_PATH_MARATHON_HEALTH_CHECK_RESULTS (const char*[]){"healthCheckResults", (const char *)0}
+#define YAJL_PATH_MARATHON_ID                   (const char*[]){"id", (const char *)0}
+#define YAJL_PATH_MARATHON_APPID                (const char*[]){"appId", (const char *)0}
+#define YAJL_PATH_MARATHON_APPS                 (const char*[]){"apps", (const char *)0}
+#define YAJL_PATH_MARATHON_HOST                 (const char*[]){"host",  (const char *)0}
+#define YAJL_PATH_MARATHON_APP_LABELS           (const char*[]){"app", "labels", (const char *)0}
+#define YAJL_PATH_MARATHON_PORTS                (const char*[]){"ports", (const char *)0}
+#define YAJL_PATH_MARATHON_STATE                (const char*[]){"state", (const char *)0}
+#define YAJL_PATH_MARATHON_APP_TASKS            (const char*[]){"app", "tasks", (const char *)0}
