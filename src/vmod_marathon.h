@@ -102,7 +102,6 @@ struct marathon_application {
   struct marathon_backend_config backend_config;
   struct marathon_backend *curbe;
   struct director dir;
-  VRT_BACKEND_FIELDS();
   struct marathon_backend_head belist;
   struct marathon_application_label_head labels;
   unsigned int has_healthchecks;
