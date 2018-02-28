@@ -38,8 +38,6 @@ PKG_CHECK_VAR([LIBVARNISHAPI_LIBDIR], [varnishapi], [libdir])
 AC_SUBST([VARNISH_LIBRARY_PATH],
 	[$LIBVARNISHAPI_LIBDIR:$LIBVARNISHAPI_LIBDIR/varnish])
 
-# Macro: AS_VERSION_COMPARE (version-1, version-2, [action-if-less], [action-if-equal], [action-if-greater])
-
 AS_VERSION_COMPARE([$VARNISH_VERSION], [5.0], [
 	AC_DEFINE([HAVE_VCL_EVENT_USE], [1], [Define if USE events are sent.])])
 

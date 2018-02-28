@@ -51,7 +51,7 @@ Reload the module.
 
 ---
 #### Debug logging
-Debug logging to syslog can be enable with ``` marathon.debug_log(1); ```
+Debug logging to syslog can be enabled with ``` marathon.debug_log(1); ```
 
 #### Healthchecks
 If an application has healthchecks configured in Marathon the module will respect it and only send traffic to tasks marked as healthy by Marathon.

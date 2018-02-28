@@ -202,14 +202,14 @@ free_be(struct vmod_marathon_server *srv, struct marathon_backend *be)
 static void 
 free_be_list(struct vmod_marathon_server *srv, struct marathon_application *app)
 {
-  struct marathon_backend *mbe = NULL, *mben = NULL;
+  struct marathon_backend *mbe = NULL, *mbe_n = NULL;
 
   CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
   CHECK_OBJ_NOTNULL(app, VMOD_MARATHON_APPLICATION_MAGIC);
 
   Lck_AssertHeld(&app->mtx);
 
-  VTAILQ_FOREACH_SAFE(mbe, &app->belist, next, mben) {
+  VTAILQ_FOREACH_SAFE(mbe, &app->belist, next, mbe_n) {
     VTAILQ_REMOVE(&app->belist, mbe, next);
     free_be(srv, mbe);
   }
@@ -226,13 +226,13 @@ free_be_list(struct vmod_marathon_server *srv, struct marathon_application *app)
 static void 
 free_label_list(struct marathon_application *app) 
 {
-  struct marathon_application_label *mlabel = NULL, *mlabel_next = NULL;
+  struct marathon_application_label *mlabel = NULL, *mlabel_n = NULL;
 
   CHECK_OBJ_NOTNULL(app, VMOD_MARATHON_APPLICATION_MAGIC);
 
   Lck_AssertHeld(&app->mtx);
 
-  VTAILQ_FOREACH_SAFE(mlabel, &app->labels, next, mlabel_next) {
+  VTAILQ_FOREACH_SAFE(mlabel, &app->labels, next, mlabel_n) {
     free(mlabel->key);
     free(mlabel->val);
     VTAILQ_REMOVE(&app->labels, mlabel, next);
@@ -436,14 +436,14 @@ add_task(struct vmod_marathon_server *srv, struct marathon_application *app,
 static void
 delete_application(struct vmod_marathon_server *srv, struct marathon_application *app)
 {
-  struct marathon_application *app_elm = NULL;
+  struct marathon_application *app_elm = NULL, *app_elm_n = NULL;
 
   CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
   CHECK_OBJ_NOTNULL(app, VMOD_MARATHON_APPLICATION_MAGIC);
 
   Lck_AssertHeld(&app->mtx);
 
-  VTAILQ_FOREACH(app_elm, &srv->app_list, next) {
+  VTAILQ_FOREACH_SAFE(app_elm, &srv->app_list, next, app_elm_n) {
     if (app_elm == app) {
       MARATHON_LOG_DEBUG(NULL, "Deleting application %s", app->id);
       VTAILQ_REMOVE(&srv->app_list, app_elm, next);
@@ -1317,7 +1317,7 @@ marathon_start(struct vmod_marathon_server *srv)
 static void
 marathon_stop(struct vmod_marathon_server *srv)
 {
-  struct marathon_application *app = NULL, *appn = NULL;
+  struct marathon_application *app = NULL, *app_n = NULL;
 
   CHECK_OBJ_NOTNULL(srv, VMOD_MARATHON_SERVER_MAGIC);
 
@@ -1329,7 +1329,7 @@ marathon_stop(struct vmod_marathon_server *srv)
   AZ(pthread_join(srv->update_th, NULL));
   MARATHON_LOG_INFO(NULL, "Update thread terminated.");
 
-  VTAILQ_FOREACH_SAFE(app, &srv->app_list, next, appn) {
+  VTAILQ_FOREACH_SAFE(app, &srv->app_list, next, app_n) {
     Lck_Lock(&app->mtx);
     delete_application(srv, app);
   }
