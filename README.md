@@ -8,7 +8,9 @@ It monitors Marathon's SSE eventbus and makes sure that the backends is always k
 
 ### Usage
 ---
-``` new my_marathon = marathon.server(endpoint = "http://marathon.domain.tld",[default appconfig options]) ```
+```vcl
+new my_marathon = marathon.server(endpoint = "http://marathon.domain.tld",[default appconfig options]) 
+```
 
 ###### Available options
 | Parameter             | Description                 | Default                |
@@ -58,7 +60,7 @@ If an application has healthchecks configured in Marathon the module will respec
 
 #### Example VCL
 ---
-```
+```vcl
 vcl 4.0;
 
 import marathon;
@@ -118,7 +120,7 @@ The source tree is based on autotools to configure the building.
 Building requires the Varnish header files and uses pkg-config to find
 the necessary paths.
 
-```
+```bash
  ./autogen.sh
  ./configure
 ```
@@ -128,7 +130,7 @@ If you have installed Varnish to a non-standard directory, call
 the appropriate path. For instance, when varnishd configure was called
 with ``--prefix=$PREFIX``, use
 
- ```
+ ```bash
  export PKG_CONFIG_PATH=${PREFIX}/lib/pkgconfig
  export ACLOCAL_PATH=${PREFIX}/share/aclocal
  ```
@@ -142,7 +144,7 @@ Make targets:
 * make - builds the vmod.
 * make install - installs your vmod.
 
-```
+```bash
  ./configure
  make
  make install
